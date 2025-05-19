@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Created on Sun Jan 14 16:27:25 2024
 
@@ -24,16 +23,15 @@ else:
 print(Folder)
 
 projname = 'test'
-f = pd.read_csv("RZ_ERMES.csv")
-Br=pd.read_csv("Br_ERMES.csv")
-Bz=pd.read_csv("Bz_ERMES.csv")
-Bt=pd.read_csv("Bt_ERMES.csv")
+f = pd.read_csv("RZ_ERMES.csv", header=None)
+Br=pd.read_csv("Br_ERMES.csv", header=None)
+Bz=pd.read_csv("Bz_ERMES.csv", header=None)
+Bt=pd.read_csv("Bt_ERMES.csv", header=None)
 g = open(projname + ".gid/" + projname + "-1.dat")
 next(g) # Skip the header
 
-Rcoords = f['R']
-Zcoords = f['Z']
-
+Rcoords = f[f.columns[0]]
+Zcoords = f[f.columns[1]]
 
 Brinterp = interpolate.RectBivariateSpline(
     Rcoords,
@@ -87,7 +85,7 @@ def formatNumber(n, digits):
     x = round(n, digits)
     return formatter.format(x)
 
-with open("transpose_test_mag.dat", "w") as test_file:
+with open("transposed_" + projname + "_ne.dat", "w") as test_file:
     for ii in range(len(nodeid)):
         if ii < 9:
             if (magfile[ii][0] >= 0) and (magfile[ii][1] >= 0) and (magfile[ii][2] >= 0):

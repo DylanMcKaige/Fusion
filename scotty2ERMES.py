@@ -1,8 +1,8 @@
 """
-Convert Scotty parameters (Beam frame) to ERMES parameters (Cartesian lab frame) and generate the coords of all points for ERMES. 
+Convert Scotty parameters to ERMES parameters and generate the coords of all points for ERMES. 
 Transposes ne data to R,Z coords as well
 
-Spits out a .txt file of all the necessary data. 
+Spits out .txt and .csv files of all the necessary data. 
 
 TODO
 1. Run in ERMES and compare to scotty
@@ -34,8 +34,8 @@ def ne_pol_to_RZ(
     num_RZ = 20
     ):
     """
-    Loads ne and topfile data from the given .dat and .json files and saves ne as a function of R & Z in a .txt file. Also plots for sanity chack against Scotty
-    TODO Save Br, Bz, Bt as separate files for fullwavemagfile.py
+    Loads ne and topfile data from the given .dat and .json files and saves ne as a function of R & Z in a .txt file. Also plots for sanity check against Scotty
+
     Args:
         ne_path (str): Relative (to cwd) paht of ne.dat file
         topfile_path (str): Relative (to cwd) path of topfile.json file
@@ -81,7 +81,7 @@ def ne_pol_to_RZ(
     R_grid_to_ERMES, Z_grid_to_ERMES = np.meshgrid(R_range, Z_range)
 
     pol_flux_vals_to_ERMES = pol_flux_spline.ev(R_grid_to_ERMES, Z_grid_to_ERMES)
-    ne_vals_to_ERMES = ne_spline(pol_flux_vals_to_ERMES)
+    ne_vals_to_ERMES = ne_spline(pol_flux_vals_to_ERMES)*1e19
 
     Br_spline = RectBivariateSpline(R, Z, Br.T)
     Bz_spline = RectBivariateSpline(R, Z, Bz.T)
@@ -90,18 +90,17 @@ def ne_pol_to_RZ(
     Br_vals_ERMES = Br_spline.ev(R_grid_to_ERMES, Z_grid_to_ERMES)
     Bz_vals_ERMES = Bz_spline.ev(R_grid_to_ERMES, Z_grid_to_ERMES)
     Bt_vals_ERMES = Bt_spline.ev(R_grid_to_ERMES, Z_grid_to_ERMES)
-    
-    R_ERMES_flat = R_grid.ravel()
-    Z_ERMES_flat = Z_grid.ravel()
-    RZ_ERMES = np.column_stack((R_ERMES_flat, Z_ERMES_flat))
+ 
+    RZ_ERMES = np.column_stack((R_range, Z_range))
 
-    np.savetxt("RZ_ERMES.csv", RZ_ERMES, delimiter=",", fmt="%.6e", header="R,Z", comments="")
+    np.savetxt("RZ_ERMES.csv", RZ_ERMES, delimiter=",", fmt="%.6e")
 
-    np.savetxt("Br_ERMES.csv", Br_vals_ERMES.T, delimiter=",", fmt="%.6e", header="Br", comments="")
-    np.savetxt("Bz_ERMES.csv", Bz_vals_ERMES.T, delimiter=",", fmt="%.6e", header="Bz", comments="")
-    np.savetxt("Bt_ERMES.csv", Bt_vals_ERMES.T, delimiter=",", fmt="%.6e", header="Bt", comments="")
+    np.savetxt("Br_ERMES.csv", Br_vals_ERMES.T, delimiter=",", fmt="%.6e")
+    np.savetxt("Bz_ERMES.csv", Bz_vals_ERMES.T, delimiter=",", fmt="%.6e")
+    np.savetxt("Bt_ERMES.csv", Bt_vals_ERMES.T, delimiter=",", fmt="%.6e")
 
-    np.savetxt("ne_ERMES.csv", ne_vals_to_ERMES.T*1e19, delimiter=",", fmt="%.6e", header="n", comments="")
+    np.savetxt("ne_ERMES.csv", ne_vals_to_ERMES.T, delimiter=",", fmt="%.6e")
+    print(ne_vals_to_ERMES.T.shape)
     
     if plot:
         plt.figure(figsize=(8, 6))
@@ -153,7 +152,7 @@ def get_ERMES_parameters(
     Generate ERMES parameters for given input
     
     Args:
-        launch_angle (float): Launch angle in degrees, w.r.t -ve R axis (assuming launching from outer face of tokamak)
+        launch_angle (float): Launch angle in degrees, w.r.t -ve R axis (assuming launching from outer face of Tokamak)
         launch_freq_GHz (float): Launch frequency in GHz
         port_width (float): Width of port in ERMES in m, so far seems to be arbitrary
         launch_position (array): Launch position in [R,t,Z] coordinates in m
@@ -200,11 +199,11 @@ def get_ERMES_parameters(
     xp11, yp11 = xp1 + port_width*cos(launch_angle_rad), yp1 - port_width*sin(launch_angle_rad)
     
     # Domain calculations
-    xd1, yd0 = xp11 + 0.001, yp01 - 0.001 # Arbitrary padding (~order of mesh spacing?) so that the volume can be generted
+    xd1, yd0 = xp11 + 0.002, yp01 - 0.002 # Arbitrary padding (~order of mesh spacing?) so that the volume can be generted
     xd0, yd1 = xd1-domain_size, yd0+domain_size
 
     # Arrays for saving
-    # Surely there is a neater way of doing this, but I'm lazy and what to get this working first before making it pretty
+    # Surely there is a neater way of doing this, but I'm lazy and want to get this working first before making it pretty
     points_x = np.array(
         [xp, xp0, xp1, xp01, xp11, launch_R, xd0, xd1, xd0, xd1, xw]
     )
@@ -217,7 +216,7 @@ def get_ERMES_parameters(
 
     # Beam params
     params_val = np.array(
-        [launch_angle/degtorad, launch_beam_width, radius_of_curv, distance_to_launcher, dist_to_ERMES_port, w0, z_R, port_width, launch_freq_GHz, launch_beam_wavelength, kx_norm, ky_norm, E0, xw, yw]
+        [launch_angle, launch_beam_width, radius_of_curv, distance_to_launcher, dist_to_ERMES_port, w0, z_R, port_width, launch_freq_GHz, launch_beam_wavelength, kx_norm, ky_norm, E0, xw, yw]
     )
     params_names = np.array(
         ['Launch Angle    ', 'Launch Beam Width    ', 'launch Beam Radius of Curvature    ', 'Distance to Launcher (from waist)    ', 'Distance to ERMES Port (from launcher)    ', 'Beam Waist (w0)    ', 'Rayleigh Length (m)    ', 'Port Width    ', 'Beam Frequency (GHz)    ', 'Beam Wavelength (m)    ', 'kx (normalized)    ', 'ky (normalized)    ', 'E0    ', 'Waist x    ', 'Waist y    ']
@@ -229,7 +228,7 @@ def get_ERMES_parameters(
         np.savetxt(file, np.array([params_names, params_val], dtype=object).T, delimiter=' ', header='Beam Params', fmt = '%s')
     
     if gen_ne:
-        ne_pol_to_RZ(ne_path, topfile_path, ERMES_R = (xd0, xd1), ERMES_Z = (yd0, yd1), num_RZ = num_RZ)
+        ne_pol_to_RZ(ne_path, topfile_path, ERMES_R = (xd0, xd1), ERMES_Z = (yd0, yd1), num_RZ = num_RZ, plot=plot)
     
     if plot:
         plt.scatter(points_x, points_y, s = 2)
@@ -242,12 +241,13 @@ if __name__ == '__main__':
         launch_freq_GHz=72.5, 
         port_width=0.01, 
         launch_positon=[3.01346,0,-0.09017], 
-        launch_beam_curvature=1/0.396298, 
-        launch_beam_width=0.045855, 
+        launch_beam_curvature=1/-0.95, 
+        launch_beam_width=0.125, 
         E0=233, 
         dist_to_ERMES_port=0.6, 
         domain_size=0.3, 
-        ne_path = 'Fusion\\source_data\\ne_189998_3000ms_quinn.dat', 
-        topfile_path = 'Fusion\\source_data\\topfile_189998_3000ms_quinn.json',
+        ne_path = '\\source_data\\ne_189998_3000ms_quinn.dat', 
+        topfile_path = '\\source_data\\topfile_189998_3000ms_quinn.json',
         num_RZ = 25,
+        plot=True,
         )

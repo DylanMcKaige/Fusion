@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Created on Sun Jan 14 16:27:25 2024
 
@@ -25,13 +24,13 @@ else:
 print(Folder)
 
 projname = 'test'
-f = pd.read_csv("RZ_ERMES.csv")
-n = pd.read_csv("ne_ERMES.csv")
+f = pd.read_csv("RZ_ERMES.csv", header=None)
+n = pd.read_csv("ne_ERMES.csv", header=None)
 g = open(projname + ".gid/" + projname + "-1.dat") # the first dat file is your mesh file, i.e projectname.gid/projectname-1.dat
 next(g) # Skip the header
 
-Rcoords = f['R']
-Zcoords = f['Z']
+Rcoords = f[f.columns[0]]
+Zcoords = f[f.columns[1]]
 
 ninterp = interpolate.RectBivariateSpline(
     Rcoords,
@@ -55,7 +54,7 @@ for lines in g:
     ndat = ninterp(x,y)[0][0]
     magfile.append([ndat])  
     
-with open("transposes_" + projname + "_ne.dat", "w") as test_file:
+with open("transposed_" + projname + "_ne.dat", "w") as test_file:
     for ii in range(len(nodeid)):
         if ii < 9:
             test_file.write(str(int(nodeid[ii])) + "   " + '{:0.15e}'.format((float(magfile[ii][0])))+"\n")
