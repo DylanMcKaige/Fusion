@@ -5,12 +5,7 @@ Transposes ne data to R,Z coords as well
 Spits out a .txt file of all the necessary data. 
 
 TODO
-1. DONE Use scotty get_params function for the experiment dependant stuffs
-2. DONE Tidy it up lol
-3. DONE Add a conversion from launch bw and bc to waist and z -> get the xyz of the waist
-4. Run in ERMES and compare to scotty
-5. DONE Convert ne file to ERMES data (map to RZ)
-6. fullwavedensfile.py, fullwavemagfile.py -> take input name of .gid & accompanying files
+1. Run in ERMES and compare to scotty
 
 References
     [1] Two dimensional full-wave simulations of Doppler back-scattering in tokamak plasmas with COMSOL by Quinn Pratt et al (in-progress paper)
@@ -205,7 +200,7 @@ def get_ERMES_parameters(
     xp11, yp11 = xp1 + port_width*cos(launch_angle_rad), yp1 - port_width*sin(launch_angle_rad)
     
     # Domain calculations
-    xd1, yd0 = xp11, yp01
+    xd1, yd0 = xp11 + 0.001, yp01 - 0.001 # Arbitrary padding (~order of mesh spacing?) so that the volume can be generted
     xd0, yd1 = xd1-domain_size, yd0+domain_size
 
     # Arrays for saving
