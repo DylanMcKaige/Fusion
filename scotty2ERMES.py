@@ -14,13 +14,13 @@ References
 
 Written by Dylan James Mc Kaige
 Created: 16/5/2025
-Updated: 19/5/2025
+Updated: 20/5/2025
 """
 import os, json
 import numpy as np
 import pandas as pd
-from math import sin, cos, sqrt, pi, fabs
-from scipy.constants import c
+from math import sin, cos, sqrt, fabs
+from scipy.constants import c, pi
 from scipy.interpolate import RectBivariateSpline, UnivariateSpline
 from matplotlib import pyplot as plt
 
@@ -45,19 +45,18 @@ def ne_pol_to_RZ(
         ERMES_Z (tuple): Range of Z to zoom in and save ne of defaults to full range from topfile
         
     Returns:
-        Plots ne in R,Z space w.r.t pol flux and saves a .csv files of ne, R, Z, Br, Bt, Bz for ERMES (Need to be converted first)
+        Plots ne in R,Z space w.r.t pol flux and saves a .csv files of ne, R, Z, Br, Bt, Bz for ERMES (Need to be converted using fullwavedensfile.py & fullwavemagfile.py)
     """
-    cwd = os.getcwd() + '\\'
-    print(cwd) # For debugging if necessary
+    path = os.getcwd() + '\\'
     
     # Load in ne data and spline it
-    ne_path = cwd + ne_path
+    ne_path = path + ne_path
     df = pd.read_csv(ne_path, sep=' ', header=None, skiprows=1)
     ne_data = df.to_numpy(dtype=float).T
     ne_spline = UnivariateSpline(ne_data[0], ne_data[1], s =  0, ext=1)
 
     # Load in topfile data and spline the flux
-    topfile_path = cwd + topfile_path
+    topfile_path = path + topfile_path
     with open(topfile_path, 'r') as file:
         topfile_data = json.load(file)
     topfile_arrays = {key: np.array(value) for key, value in topfile_data.items()}
@@ -138,7 +137,6 @@ def get_ERMES_parameters(
     launch_positon: np.array,
     launch_beam_curvature: float,
     launch_beam_width: float,
-    E0: float,
     dist_to_ERMES_port: float,
     domain_size: float,
     plot = True,
@@ -152,13 +150,12 @@ def get_ERMES_parameters(
     Generate ERMES parameters for given input
     
     Args:
-        launch_angle (float): Launch angle in degrees, w.r.t -ve R axis (assuming launching from outer face of Tokamak)
+        launch_angle (float): Launch angle in degrees, w.r.t -ve R axis
         launch_freq_GHz (float): Launch frequency in GHz
         port_width (float): Width of port in ERMES in m, so far seems to be arbitrary
         launch_position (array): Launch position in [R,t,Z] coordinates in m
         launch_beam_curvature (float): Curvature of beam at launch position, in m^{-1}
         launch_beam_width (float): Width of beam at launch position, in m
-        E0 (float): Amplitude of E par/ E perp, assumes same
         dist_to_ERMES_port (float): Distance from launcher to port in ERMES in m, stare at Scotty to decide this
         domain_size (float): Size of domain for ERMES in m, stare at Scotty to decide this
         plot (bool): Plot the points
@@ -175,7 +172,7 @@ def get_ERMES_parameters(
     degtorad = pi/180
     
     launch_beam_wavelength = c/(launch_freq_GHz*1e9)
-    radius_of_curv = 1/launch_beam_curvature
+    radius_of_curv = fabs(1/launch_beam_curvature)
     launch_angle_rad = launch_angle*degtorad
     launch_R = launch_positon[0]
     launch_Z = launch_positon[2]
@@ -197,6 +194,10 @@ def get_ERMES_parameters(
     poly = 0
     polz = 1
     
+    # This formula is from a .txt file from UCLA collaborators. I didn't look for a proper source/derivation of this yet
+    z0 = 377 # Impedance of free space
+    E0 = sqrt(z0*2*1/(w0*sqrt(pi/2))) # For P_in = 1 W/m
+    
     # Port calculations
     xp, yp = launch_R - dist_to_ERMES_port*cos(launch_angle_rad), launch_Z + dist_to_ERMES_port*sin(launch_angle_rad)
     xp0, yp0 = xp - w_ERMES/2 * sin(launch_angle_rad), yp - w_ERMES/2 * cos(launch_angle_rad)
@@ -205,7 +206,9 @@ def get_ERMES_parameters(
     xp11, yp11 = xp1 + port_width*cos(launch_angle_rad), yp1 - port_width*sin(launch_angle_rad)
     
     # Domain calculations
-    xd1, yd0 = xp11 + 0.002, yp01 - 0.002 # Arbitrary padding (~order of mesh spacing?) so that the volume can be generted
+    # Arbitrary padding (~10 x order of mesh spacing?) so that the volume can be generated. 
+    # If padding is too small, will cause errors in ERMES
+    xd1, yd0 = xp11 + 0.005, yp01 - 0.005 
     xd0, yd1 = xd1-domain_size, yd0+domain_size
 
     # Arrays for saving
@@ -217,15 +220,61 @@ def get_ERMES_parameters(
         [yp, yp0, yp1, yp01, yp11, launch_Z, yd0, yd0, yd1, yd1, yw]
     )
     points_names = np.array(
-        ['Source Position (front face of port)    ', 'Port BL    ', 'Port TL    ', 'Port BR    ', 'Port TR    ', 'Launch Position    ', 'Domain BL    ', 'Domain BR    ', 'Domain TL    ', 'Domain TR    ', 'Waist Position    ']
+        ['Source Position (front face of port)    ', 
+         'Port BL    ', 
+         'Port TL    ', 
+         'Port BR    ', 'Port TR    ', 
+         'Launch Position    ', 
+         'Domain BL    ', 
+         'Domain BR    ', 
+         'Domain TL    ', 
+         'Domain TR    ', 
+         'Waist Position    '
+         ]
     )
 
     # Beam params
     params_val = np.array(
-        [launch_angle, launch_beam_width, radius_of_curv, distance_to_launcher, dist_to_ERMES_port, w0, z_R, port_width, launch_freq_GHz, launch_beam_wavelength, kx_norm, ky_norm, polx, poly, polz, E0, xw, yw]
+        [launch_angle, 
+         launch_beam_width, 
+         radius_of_curv, 
+         distance_to_launcher, 
+         dist_to_ERMES_port, 
+         w0, 
+         z_R, 
+         port_width, 
+         launch_freq_GHz, 
+         launch_beam_wavelength, 
+         kx_norm, 
+         ky_norm, 
+         polx, 
+         poly, 
+         polz, 
+         E0, 
+         xw, 
+         yw
+         ]
     )
     params_names = np.array(
-        ['Launch Angle    ', 'Launch Beam Width    ', 'launch Beam Radius of Curvature    ', 'Distance to Launcher (from waist)    ', 'Distance to ERMES Port (from launcher)    ', 'Beam Waist (w0)    ', 'Rayleigh Length (m)    ', 'Port Width    ', 'Beam Frequency (GHz)    ', 'Beam Wavelength (m)    ', 'kx (normalized)    ', 'ky (normalized)    ', 'polx (normalized)    ', 'poly (normalized)    ', 'polz (normalized)    ', 'E0    ', 'Waist x    ', 'Waist y    ']
+        ['Launch Angle    ', 
+         'Launch Beam Width    ', 
+         'launch Beam Radius of Curvature    ', 
+         'Distance to Launcher (from waist)    ', 
+         'Distance to ERMES Port (from launcher)    ', 
+         'Beam Waist (w0)    ', 
+         'Rayleigh Length (m)    ', 
+         'Port Width    ', 
+         'Beam Frequency (GHz)    ', 
+         'Beam Wavelength (m)    ', 
+         'kx (normalized)    ', 
+         'ky (normalized)    ', 
+         'polx (normalized)    ', 
+         'poly (normalized)    ', 
+         'polz (normalized)    ', 
+         'E0    ', 
+         'Waist x    ', 
+         'Waist y    '
+         ]
     )
     
     # Save it!
@@ -247,9 +296,8 @@ if __name__ == '__main__':
         launch_freq_GHz=72.5, 
         port_width=0.01, 
         launch_positon=[3.01346,0,-0.09017], 
-        launch_beam_curvature=1/-0.95, 
+        launch_beam_curvature=-0.95, 
         launch_beam_width=0.125, 
-        E0=233, 
         dist_to_ERMES_port=0.6, 
         domain_size=0.3, 
         ne_path = '\\source_data\\ne_189998_3000ms_quinn.dat', 
