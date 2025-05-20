@@ -185,11 +185,17 @@ def get_ERMES_parameters(
     z_R = fabs((launch_beam_wavelength*radius_of_curv*distance_to_launcher)/(pi*launch_beam_width**2))
     w0 = sqrt((launch_beam_wavelength*z_R)/(pi))
     
-    w_ERMES = 2*launch_beam_width # Width of beam at port position in ERMES
-    kx_norm = cos(launch_angle_rad) # Normalized k vector
+    w_ERMES = 2*w0*sqrt(1+(dist_to_ERMES_port/z_R)**2) # Width of beam at port position in ERMES
+    kx_norm = -cos(launch_angle_rad) # Normalized k vector, -ve because leftwards by definition of geometry
     ky_norm = sin(launch_angle_rad) # Normalized k vector 
     xw = launch_R - distance_to_launcher*cos(launch_angle_rad) # Centre of waist
     yw = launch_Z + distance_to_launcher*sin(launch_angle_rad) # Centre of waist
+    
+    # Scuffed normalized polarization vector generation (Forcing it to be polarized out of the plane of the screen)
+    # Since we define k to be in the plane of the screen, the vector pointing out is definitely perp to it, satisfying ERMES
+    polx = 0
+    poly = 0
+    polz = 1
     
     # Port calculations
     xp, yp = launch_R - dist_to_ERMES_port*cos(launch_angle_rad), launch_Z + dist_to_ERMES_port*sin(launch_angle_rad)
@@ -216,10 +222,10 @@ def get_ERMES_parameters(
 
     # Beam params
     params_val = np.array(
-        [launch_angle, launch_beam_width, radius_of_curv, distance_to_launcher, dist_to_ERMES_port, w0, z_R, port_width, launch_freq_GHz, launch_beam_wavelength, kx_norm, ky_norm, E0, xw, yw]
+        [launch_angle, launch_beam_width, radius_of_curv, distance_to_launcher, dist_to_ERMES_port, w0, z_R, port_width, launch_freq_GHz, launch_beam_wavelength, kx_norm, ky_norm, polx, poly, polz, E0, xw, yw]
     )
     params_names = np.array(
-        ['Launch Angle    ', 'Launch Beam Width    ', 'launch Beam Radius of Curvature    ', 'Distance to Launcher (from waist)    ', 'Distance to ERMES Port (from launcher)    ', 'Beam Waist (w0)    ', 'Rayleigh Length (m)    ', 'Port Width    ', 'Beam Frequency (GHz)    ', 'Beam Wavelength (m)    ', 'kx (normalized)    ', 'ky (normalized)    ', 'E0    ', 'Waist x    ', 'Waist y    ']
+        ['Launch Angle    ', 'Launch Beam Width    ', 'launch Beam Radius of Curvature    ', 'Distance to Launcher (from waist)    ', 'Distance to ERMES Port (from launcher)    ', 'Beam Waist (w0)    ', 'Rayleigh Length (m)    ', 'Port Width    ', 'Beam Frequency (GHz)    ', 'Beam Wavelength (m)    ', 'kx (normalized)    ', 'ky (normalized)    ', 'polx (normalized)    ', 'poly (normalized)    ', 'polz (normalized)    ', 'E0    ', 'Waist x    ', 'Waist y    ']
     )
     
     # Save it!
