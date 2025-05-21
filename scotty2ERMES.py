@@ -28,9 +28,11 @@ def ne_pol_to_RZ(
     ne_path: str,
     topfile_path: str,
     plot = True,
+    save = True,
     path = os.getcwd() + '\\',
     ERMES_R = None,
     ERMES_Z = None,
+    ERMES_port = None,
     num_RZ = 20
     ):
     """
@@ -40,9 +42,11 @@ def ne_pol_to_RZ(
         ne_path (str): Relative (to cwd) paht of ne.dat file
         topfile_path (str): Relative (to cwd) path of topfile.json file
         plot (bool): Plot the data
+        save (bool): Save the data
         path (str): Path to save file in, defaults to cwd
         ERMES_R (tuple): Range of R to zoom in and save ne of defaults to full range from topfile
         ERMES_Z (tuple): Range of Z to zoom in and save ne of defaults to full range from topfile
+        ERMES_port (tuple): Coordinates of port to check if it is within the plasma 
         
     Returns:
         Plots ne in R,Z space w.r.t pol flux and saves a .csv files of ne, R, Z, Br, Bt, Bz for ERMES (Need to be converted using fullwavedensfile.py & fullwavemagfile.py)
@@ -53,7 +57,7 @@ def ne_pol_to_RZ(
     ne_path = path + ne_path
     df = pd.read_csv(ne_path, sep=' ', header=None, skiprows=1)
     ne_data = df.to_numpy(dtype=float).T
-    ne_spline = UnivariateSpline(ne_data[0], ne_data[1], s =  0, ext=1)
+    ne_spline = UnivariateSpline(ne_data[0]**2, ne_data[1], s =  0, ext=1) # Squared cus input data is in sqrt(psi_p) convention following TORBEAM
 
     # Load in topfile data and spline the flux
     topfile_path = path + topfile_path
@@ -92,14 +96,14 @@ def ne_pol_to_RZ(
  
     RZ_ERMES = np.column_stack((R_range, Z_range))
 
-    np.savetxt("RZ_ERMES.csv", RZ_ERMES, delimiter=",", fmt="%.6e")
+    if save:
+        np.savetxt("RZ_ERMES.csv", RZ_ERMES, delimiter=",", fmt="%.6e")
 
-    np.savetxt("Br_ERMES.csv", Br_vals_ERMES.T, delimiter=",", fmt="%.6e")
-    np.savetxt("Bz_ERMES.csv", Bz_vals_ERMES.T, delimiter=",", fmt="%.6e")
-    np.savetxt("Bt_ERMES.csv", Bt_vals_ERMES.T, delimiter=",", fmt="%.6e")
+        np.savetxt("Br_ERMES.csv", Br_vals_ERMES.T, delimiter=",", fmt="%.6e")
+        np.savetxt("Bz_ERMES.csv", Bz_vals_ERMES.T, delimiter=",", fmt="%.6e")
+        np.savetxt("Bt_ERMES.csv", Bt_vals_ERMES.T, delimiter=",", fmt="%.6e")
 
-    np.savetxt("ne_ERMES.csv", ne_vals_to_ERMES.T, delimiter=",", fmt="%.6e")
-    print(ne_vals_to_ERMES.T.shape)
+        np.savetxt("ne_ERMES.csv", ne_vals_to_ERMES.T, delimiter=",", fmt="%.6e")
     
     if plot:
         plt.figure(figsize=(8, 6))
@@ -120,6 +124,7 @@ def ne_pol_to_RZ(
         cf = plt.contourf(R_grid_to_ERMES, Z_grid_to_ERMES, ne_vals_to_ERMES, levels=100, cmap='plasma')
         pol_flux_levels = np.linspace(0.0, 1.0, 11)
         cs = plt.contour(R_grid_to_ERMES, Z_grid_to_ERMES, pol_flux_vals_to_ERMES, levels=pol_flux_levels, colors='black', linewidths=0.8)
+        plt.scatter(*zip(*ERMES_port), s = 2, color='white')
         plt.clabel(cs, fmt=r'%.1f', fontsize=8, colors='black')
 
         plt.colorbar(cf, label=r'$n_e\ (10^{19}\ \mathrm{m}^{-3})$')
@@ -140,6 +145,7 @@ def get_ERMES_parameters(
     dist_to_ERMES_port: float,
     domain_size: float,
     plot = True,
+    save = True,
     path = os.getcwd() + '\\',
     gen_ne = True,
     ne_path = None,
@@ -158,7 +164,8 @@ def get_ERMES_parameters(
         launch_beam_width (float): Width of beam at launch position, in m
         dist_to_ERMES_port (float): Distance from launcher to port in ERMES in m, stare at Scotty to decide this
         domain_size (float): Size of domain for ERMES in m, stare at Scotty to decide this
-        plot (bool): Plot the points
+        plot (bool): Plot everything
+        save (bool): Save everything
         path (str): Path to save file in, defaults to cwd
         gen_ne (bool): Generte ne, R and Z files for ERMES
         ne_path (str): Relative (to cwd) paht of ne.dat file
@@ -190,6 +197,8 @@ def get_ERMES_parameters(
     
     # Scuffed normalized polarization vector generation (Forcing it to be polarized out of the plane of the screen)
     # Since we define k to be in the plane of the screen, the vector pointing out is definitely perp to it, satisfying ERMES
+    # TODO update this to get the actual one from scotty
+    # THIS JUST ENSURES THAT ERMES WORKS, it is very wrong please update this 
     polx = 0
     poly = 0
     polz = 1
@@ -251,8 +260,6 @@ def get_ERMES_parameters(
          poly, 
          polz, 
          E0, 
-         xw, 
-         yw
          ]
     )
     params_names = np.array(
@@ -272,18 +279,18 @@ def get_ERMES_parameters(
          'poly (normalized)    ', 
          'polz (normalized)    ', 
          'E0    ', 
-         'Waist x    ', 
-         'Waist y    '
          ]
     )
     
     # Save it!
-    np.savetxt(path + 'ERMES_params', np.array([points_names, points_x, points_y], dtype=object).T, delimiter=' ', header = 'Cartesian points in ERMES', fmt='%s')
-    with open(path + 'ERMES_params', 'a') as file:
-        np.savetxt(file, np.array([params_names, params_val], dtype=object).T, delimiter=' ', header='Beam Params', fmt = '%s')
+    if save:
+        np.savetxt(path + 'ERMES_params', np.array([points_names, points_x, points_y], dtype=object).T, delimiter=' ', header = 'Cartesian points in ERMES', fmt='%s')
+        # There's probably a better way to do this 
+        with open(path + 'ERMES_params', 'a') as file:
+            np.savetxt(file, np.array([params_names, params_val], dtype=object).T, delimiter=' ', header='Beam Params', fmt = '%s')
     
     if gen_ne:
-        ne_pol_to_RZ(ne_path, topfile_path, ERMES_R = (xd0, xd1), ERMES_Z = (yd0, yd1), num_RZ = num_RZ, plot=plot)
+        ne_pol_to_RZ(ne_path, topfile_path, ERMES_R = (xd0, xd1), ERMES_Z = (yd0, yd1), ERMES_port = ([xp0, yp0], [xp1, yp1], [xp01, yp01], [xp11, yp11]), num_RZ = num_RZ, plot=plot)
     
     if plot:
         plt.scatter(points_x, points_y, s = 2)
@@ -298,10 +305,11 @@ if __name__ == '__main__':
         launch_positon=[3.01346,0,-0.09017], 
         launch_beam_curvature=-0.95, 
         launch_beam_width=0.125, 
-        dist_to_ERMES_port=0.6, 
+        dist_to_ERMES_port=0.65, 
         domain_size=0.3, 
         ne_path = '\\source_data\\ne_189998_3000ms_quinn.dat', 
         topfile_path = '\\source_data\\topfile_189998_3000ms_quinn.json',
         num_RZ = 25,
         plot=True,
+        save = False,
         )
