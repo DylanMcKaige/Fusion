@@ -6,37 +6,86 @@ Spits out .txt and .csv files of all the necessary data.
 
 TODO
 1. Run in ERMES and compare to scotty (7 deg done, 15 deg done)
-2. Linear to Elliptical pol
+2. Project pol onto rho,eta plane
+3. Figure out E0 -> Matthew 7 valerian & Ruben's script
 
 References
     [1] Two dimensional full-wave simulations of Doppler back-scattering in tokamak plasmas with COMSOL by Quinn Pratt et al (in-progress paper)
     [2] https://www.edmundoptics.com/knowledge-center/tech-tools/gaussian-beams/
     [3] ERMES_20 Manual by Ruben Otin, pg 43-44
+    [4] V. H. Hall-Chen, F. I. Parra, and J. C. Hillesheim, “Beam model of Doppler backscattering,” Plasma Phys. Control. Fusion, vol. 64, no. 9, p. 095002, Sep. 2022, doi: 10.1088/1361-6587/ac57a1.
+
 
 Written by Dylan James Mc Kaige
 Created: 16/5/2025
-Updated: 23/5/2025
+Updated: 3/6/2025
 """
-import os, json
+import os, json, datatree
 import numpy as np
 import pandas as pd
-from math import sin, cos, sqrt, fabs, isclose
+from math import sin, cos, sqrt, fabs
 from scipy.constants import c, pi
-from scipy.interpolate import RectBivariateSpline, UnivariateSpline, RegularGridInterpolator
+from scipy.interpolate import RectBivariateSpline, UnivariateSpline
 from matplotlib import pyplot as plt
 
-def find_lcfs_entry_point(pol_flux_spline, R0, Z0, launch_angle_rad, psi_closed, step=0.001, max_dist=0.5):
+def RtZ_to_XYZ(a: np.array) -> np.array:
     """
-    Finds the point of entry along the Last Closed Flux Surface for calculation of polarization vector (Linear)
+    Convert an array in (R,t,Z) to (X,Y,Z) for ERMES, keeping the right handed coordinate system.
+    
+    This function is for consistency because I keep messing this up.
+    
+    By right-hand rule, R x t points up, R x Z points out of the plane. So we can't directly say X = R, Y = Z, Z = t. 
+    We need to flip the sign of t to maintian the right-handedness
+    
+    Args:
+        a (array): The vector to transform in (R,t,Z) basis
+    
+    Returns:
+        b (array): The transformed vector in (X,Y,Z) basis (ERMES Cartesian)
+
+    """
+    assert len(a) == 3, "This function only supports arrays of length 3"
+    
+    b = np.array([a[0], a[2], -a[1]])
+    return b
+    
+
+def load_scotty_data(path: str) -> datatree.DataTree:
+    """
+    Load data from scotty and return the datatree.
+    
+    Args: 
+        path (str): Path (relative to cwd) to Scotty output file inclusive of the file name
+    
+    Returns:
+        dt (DataTree): Scotty output datatree
+    """
+    assert os.path.exists(os.getcwd() + path), f"Path '{os.getcwd() + path}' does not exist."
+    dt = datatree.open_datatree(os.getcwd() + path, engine="h5netcdf")
+    
+    return dt
+
+def find_lcfs_entry_point(
+    pol_flux_spline: RectBivariateSpline, 
+    R0: float, 
+    Z0: float, 
+    launch_angle_rad: float, 
+    psi_closed: float, 
+    step: float = 0.001, 
+    max_dist: float = 0.5
+    ):
+    """    
+    Finds the point of entry along the Last Closed Flux Surface for calculation of polarization vector (Linear).
+    Only used if no Scotty output file is provided
 
     Args:
-        pol_flux_spline (spline): Poloidal flux spline
+        pol_flux_spline (RectBivariateSpline): Poloidal flux spline
         R0 (float): R of launcher (or centre of port since they are collinear)
         Z0 (float): Z of launcher (or centre of port since they are collinear)
         launch_angle_rad (float): Launch angle in rad w.r.t -ve R axis
         psi_closed (float): Value of poloidal flux for the LCFS
         step (float): Step size for line interpolation. Defaults to 0.001
-        max_dist (floattional): Maximum distance away from launcher (or port) to search. Defaults to 0.5
+        max_dist (float): Maximum distance away from launcher (or port) to search. Defaults to 0.5
 
     Returns:
         R_entry (float): R of point of entry
@@ -54,35 +103,71 @@ def find_lcfs_entry_point(pol_flux_spline, R0, Z0, launch_angle_rad, psi_closed,
         if (psi1 < psi_closed and psi2 >= psi_closed) or (psi1 > psi_closed and psi2 <= psi_closed):
             
             # Linear interpolation between psi1 and psi2
-            frac = (psi_closed - psi1)/(psi2 - psi1 + 1e-12)
-            s_entry = s_vals[i] + frac * step
+            frac = (psi_closed - psi1)/(psi2 - psi1 + 1e-12) # Arbitrarliy prevent divide-by-zero errors
+            s_entry = s_vals[i] + frac*step
             R_entry = R0 - s_entry*cos(-launch_angle_rad)
             Z_entry = Z0 - s_entry*sin(-launch_angle_rad)
             return R_entry, Z_entry
 
     raise "Last Closed Flux Surface not intersected along beam path"
     
+def get_pol_from_scotty(dt: datatree.DataTree):
+    """
+    Get the polarization vector from a Scotty output file. This function assumes
+    1) Tau starts from point of entry (may not be exactly equal to the one calculated by find_lcfs_entry_point)
+    2) y_hat, b_hat, g_hat are in the (R,t,Z) basis, e_hat is in the (u1,u2,bhat) basis
+    3) Equations 104-106 from [4] apply exactly to let us derive u1_hat and u2_hat
+    
+    Produces an elliptical polarization vector.
 
-def scottyData2ERMES(
+    Args:
+        dt (DataTree): Scotty output file
+        
+    Returns:
+        e_hat_XYZ (array): Polarization vector in (X,Y,Z) basis
+    """
+ 
+    y_hat = dt.analysis.y_hat.values
+    g_hat = dt.analysis.g_hat.values
+    b_hat = dt.analysis.b_hat.values/np.linalg.norm(dt.analysis.b_hat.values)
+    e_hat = dt.analysis.e_hat.values
+    u2_hat = y_hat/np.linalg.norm(y_hat)
+    u1_hat = (np.cross(np.cross(b_hat, g_hat), b_hat))/np.linalg.norm(np.cross(np.cross(b_hat, g_hat), b_hat))
+
+    # Form the basis transition vector from u1,u2,b to R,t,Z
+    uub_to_RtZ_basis = np.column_stack((u1_hat[0],u2_hat[0],b_hat[0]))
+
+    # Pol vector in R,t,Z
+    e_hat_uub = e_hat[0]
+    e_hat_RtZ = np.dot(uub_to_RtZ_basis, e_hat_uub)
+    e_hat_RtZ = e_hat_RtZ/np.linalg.norm(e_hat_RtZ)
+    e_hat_XYZ = RtZ_to_XYZ(e_hat_RtZ)
+    
+    return e_hat_XYZ
+
+def scottyInputData2ERMES(
     ne_path: str,
     topfile_path: str,
     filename: str,
-    plot = True,
-    save = True,
-    path = os.getcwd() + '\\',
+    dt: datatree.DataTree = None,
+    plot: bool = True,
+    save: bool = True,
+    path: str = os.getcwd() + '\\',
     ERMES_R = None,
     ERMES_Z = None,
     ERMES_port = None,
     ERMES_launch_centre = None,
     launch_angle_rad = None,
-    num_RZ = 20
+    num_RZ = 25
     ):
     """
-    Loads ne and topfile data from the given .dat and .json files and saves ne as a function of R & Z in a .txt file. Also plots for sanity check against Scotty
+    Loads ne and topfile data from the given .dat and .json files and saves ne, Br, Bt, Bz as a function of R & Z in a .csv file. Also plots for sanity check against Scotty
 
     Args:
         ne_path (str): Relative (to cwd) paht of ne.dat file
         topfile_path (str): Relative (to cwd) path of topfile.json file
+        filename (str): Filename for saving
+        dt (DataTree): Scotty output file in .h5 format
         plot (bool): Plot the data
         save (bool): Save the data
         path (str): Path to save file in, defaults to cwd
@@ -131,29 +216,34 @@ def scottyData2ERMES(
     R_grid_to_ERMES, Z_grid_to_ERMES = np.meshgrid(R_range, Z_range)
 
     pol_flux_vals_to_ERMES = pol_flux_spline.ev(R_grid_to_ERMES, Z_grid_to_ERMES)
-    ne_vals_to_ERMES = ne_spline(pol_flux_vals_to_ERMES)*1e19
+    ne_vals_to_ERMES = ne_spline(pol_flux_vals_to_ERMES)*1e19 # Since the data was normalised by 1e19
 
     Br_spline = RectBivariateSpline(R, Z, Br.T)
-    Bz_spline = RectBivariateSpline(R, Z, Bz.T)
     Bt_spline = RectBivariateSpline(R, Z, Bt.T)
+    Bz_spline = RectBivariateSpline(R, Z, Bz.T)
     
     Br_vals_ERMES = Br_spline.ev(R_grid_to_ERMES, Z_grid_to_ERMES)
-    Bz_vals_ERMES = Bz_spline.ev(R_grid_to_ERMES, Z_grid_to_ERMES)
     Bt_vals_ERMES = Bt_spline.ev(R_grid_to_ERMES, Z_grid_to_ERMES)
+    Bz_vals_ERMES = Bz_spline.ev(R_grid_to_ERMES, Z_grid_to_ERMES)
     
     # Get the line from launcher to plasma then find the point where ne goes from 0 to +ve, this is the point of entry of the beam into the plasma
-    entry_point = find_lcfs_entry_point(
-        pol_flux_spline,
-        R0=ERMES_launch_centre[0],
-        Z0=ERMES_launch_centre[1],
-        launch_angle_rad=launch_angle_rad,
-        psi_closed=ne_data[0,-1],
+    # Only used if no Scotty output file used
+    if dt is None:
+        entry_point = find_lcfs_entry_point(
+            pol_flux_spline,
+            R0=ERMES_launch_centre[0],
+            Z0=ERMES_launch_centre[1],
+            launch_angle_rad=launch_angle_rad,
+            psi_closed=ne_data[0,-1],
+            
+        )
+    else:
+        entry_point = [dt.inputs.initial_position.values[0], dt.inputs.initial_position.values[2]]
         
-    )
     B_entry_vec = np.array([
         Br_spline.ev(entry_point[0], entry_point[1]),
-        Bz_spline.ev(entry_point[0], entry_point[1]),
-        Bt_spline.ev(entry_point[0], entry_point[1])
+        Bt_spline.ev(entry_point[0], entry_point[1]),
+        Bz_spline.ev(entry_point[0], entry_point[1])
         ]
     )
  
@@ -202,14 +292,15 @@ def scottyData2ERMES(
     return entry_point, B_entry_vec
 
 def get_ERMES_parameters(
-    launch_angle: float,
-    launch_freq_GHz: float,
-    port_width: float,
-    launch_positon: np.array,
-    launch_beam_curvature: float,
-    launch_beam_width: float,
-    dist_to_ERMES_port: float,
-    domain_size: float,
+    dt: datatree.DataTree = None,
+    launch_angle: float = None,
+    launch_freq_GHz: float = None,
+    launch_positon: np.array = None,
+    launch_beam_curvature: float = None,
+    launch_beam_width: float = None,
+    port_width: float = None,
+    dist_to_ERMES_port: float = None,
+    domain_size: float = None,
     plot = True,
     save = True,
     path = os.getcwd() + '\\',
@@ -221,6 +312,7 @@ def get_ERMES_parameters(
     Generate ERMES parameters for given input
     
     Args:
+        dt (DataTree): Scotty output file in .h5 format
         launch_angle (float): Launch angle in degrees, w.r.t -ve R axis
         launch_freq_GHz (float): Launch frequency in GHz
         port_width (float): Width of port in ERMES in m, so far seems to be arbitrary
@@ -240,17 +332,28 @@ def get_ERMES_parameters(
         Plots the position of the required points in the Z-R axes and saves a .txt file of the necessary values for ERMES
         Optionally generates the necessary ne, R and Z files for ERMES
     """
-    filename = str(launch_angle) + "_degree_" + str(launch_freq_GHz) + "GHz_"
     degtorad = pi/180
     
+    if dt is None:
+        # Take inputs
+        launch_R = launch_positon[0]
+        launch_Z = launch_positon[2]
+    else:
+        # Else, take from Scotty
+        launch_freq_GHz = dt.inputs.launch_freq_GHz.values
+        launch_beam_width = dt.inputs.launch_beam_width.values
+        launch_beam_curvature = dt.inputs.launch_beam_curvature.values
+        launch_angle = fabs(dt.inputs.poloidal_launch_angle_Torbeam.values)
+        launch_R = dt.inputs.launch_position.values[0]
+        launch_Z = dt.inputs.launch_position.values[2]
+        
     launch_beam_wavelength = c/(launch_freq_GHz*1e9)
     radius_of_curv = fabs(1/launch_beam_curvature)
     launch_angle_rad = launch_angle*degtorad
-    launch_R = launch_positon[0]
-    launch_Z = launch_positon[2]
+    filename = str(launch_angle) + "_degree_" + str(launch_freq_GHz) + "GHz_"
     
     # Initial calculations
-    distance_to_launcher = fabs((radius_of_curv* pi**2 * launch_beam_width**4)/(launch_beam_wavelength**2 * radius_of_curv**2+pi**2 * launch_beam_width**4))
+    distance_to_launcher = fabs((radius_of_curv * pi**2 * launch_beam_width**4)/(launch_beam_wavelength**2 * radius_of_curv**2+pi**2 * launch_beam_width**4))
     z_R = fabs((launch_beam_wavelength*radius_of_curv*distance_to_launcher)/(pi*launch_beam_width**2))
     w0 = sqrt((launch_beam_wavelength*z_R)/(pi))
     
@@ -261,13 +364,22 @@ def get_ERMES_parameters(
     yw = launch_Z + distance_to_launcher*sin(launch_angle_rad) # Centre of waist
     
     # This formula is from a .txt file from UCLA collaborators. I didn't look for a proper source/derivation of this yet
+    ### TO UPDATE 
+    """
+    Eventually I need to get E_rho, E_eta, @_rho, @_eta as the module and phase 
+    of E in the major and minor axes where rho is pol vector, eta = k x rho where k is 
+    wave vector in (X,Y,Z)
+    
+    I think that the norm of E_rho and E_eta should be equal to E_0 from [4]? Where we set A_ant to 1 for convenience.
+    This leads me to believe that E_0 is det(im(psi_w_entry))/det(im(psi_w_ant)) ** 1/4? Since g should be constant until the ray JUST enters the plasa
+    """
     z0 = 377 # Impedance of free space
     E0 = sqrt(z0*2*1/(w0*sqrt(pi/2))) # For P_in = 1 W/m
     
     # Port calculations
     xp, yp = launch_R - dist_to_ERMES_port*cos(launch_angle_rad), launch_Z + dist_to_ERMES_port*sin(launch_angle_rad)
-    xp0, yp0 = xp - w_ERMES/2 * sin(launch_angle_rad), yp - w_ERMES/2 * cos(launch_angle_rad)
-    xp1, yp1 = xp + w_ERMES/2 * sin(launch_angle_rad), yp + w_ERMES/2 * cos(launch_angle_rad)
+    xp0, yp0 = xp - w_ERMES/2*sin(launch_angle_rad), yp - w_ERMES/2*cos(launch_angle_rad)
+    xp1, yp1 = xp + w_ERMES/2*sin(launch_angle_rad), yp + w_ERMES/2*cos(launch_angle_rad)
     xp01, yp01 = xp0 + port_width*cos(launch_angle_rad), yp0 - port_width*sin(launch_angle_rad)
     xp11, yp11 = xp1 + port_width*cos(launch_angle_rad), yp1 - port_width*sin(launch_angle_rad)
     
@@ -276,13 +388,14 @@ def get_ERMES_parameters(
     # If padding is too small, will cause errors in ERMES OR mesh generation will take stupidly long... I don't make the rules!
     xd1, yd0 = xp11 + 0.005, yp01 - 0.005 
     xd0, yd1 = xd1-domain_size, yd0+domain_size
-
-    # Scotty data calculations
-    entry_point, B_entry_vec = scottyData2ERMES(
+    
+    # Convert Scotty input files into RZ format (& Do some sanity plots)
+    entry_point, B_entry_vec_RtZ = scottyInputData2ERMES(
         ne_path, 
         topfile_path, 
         filename = filename,
         plot=plot,
+        dt=dt,
         ERMES_R=(xd0, xd1), 
         ERMES_Z=(yd0, yd1), 
         ERMES_port=([xp0, yp0], [xp1, yp1], [xp01, yp01], [xp11, yp11]), 
@@ -291,11 +404,17 @@ def get_ERMES_parameters(
         num_RZ=num_RZ,
         )
     
-    # pol vec at launch point = beam k X B field at launch point
-    k_vec = np.array([kx_norm, ky_norm, 0])
-    pol_vec = np.cross(k_vec, B_entry_vec)
-    pol_vec = pol_vec/np.linalg.norm(pol_vec)
+    B_entry_vec_XYZ = RtZ_to_XYZ(B_entry_vec_RtZ)
     
+    # linear pol vec at launch point = beam k X B field at launch point in (X,Y,Z)
+    k_vec = np.array([kx_norm, ky_norm, 0])
+    lin_pol_vec = np.cross(k_vec, B_entry_vec_XYZ)
+    lin_pol_vec = lin_pol_vec/np.linalg.norm(lin_pol_vec)
+    
+    # Elliptical pol vector from Scotty
+    if dt is not None: ellip_pol_vec = get_pol_from_scotty(dt)
+    else: ellip_pol_vec = np.array([0, 0, 0])
+
     # Arrays for saving
     # Surely there is a neater way of doing this, but I'm lazy and want to get this working first before making it pretty
     points_x = np.array([
@@ -338,8 +457,8 @@ def get_ERMES_parameters(
         'Domain BR    ', 
         'Domain TL    ', 
         'Domain TR    ', 
-        'Waist Position',
-        'Point of Entry',
+        'Waist Position    ',
+        'Point of Entry    ',
         ]
     )
 
@@ -357,9 +476,12 @@ def get_ERMES_parameters(
         launch_beam_wavelength, 
         kx_norm, 
         ky_norm, 
-        pol_vec[0],
-        pol_vec[1],
-        pol_vec[2],
+        lin_pol_vec[0],
+        lin_pol_vec[1],
+        lin_pol_vec[2],
+        ellip_pol_vec[0],
+        ellip_pol_vec[1],
+        ellip_pol_vec[2],
         E0, 
         ]
     )
@@ -376,9 +498,12 @@ def get_ERMES_parameters(
         'Beam Wavelength (m)    ', 
         'kx (normalized)    ', 
         'ky (normalized)    ', 
-        'polx (normalized)    ', 
-        'poly (normalized)    ', 
-        'polz (normalized)    ', 
+        'Linear polx (normalized)    ', 
+        'Linear poly (normalized)    ', 
+        'Linear polz (normalized)    ', 
+        'Ellipitcal polx (normalized)    ', 
+        'Ellipitcal poly (normalized)    ', 
+        'Ellipitcal polz (normalized)    ', 
         'E0    ', 
         ]
     )
@@ -397,6 +522,7 @@ def get_ERMES_parameters(
 
 if __name__ == '__main__':
     get_ERMES_parameters(
+        dt=load_scotty_data('\\Output\\scotty_output_freq72.5_pol-15.0_rev.h5'),
         launch_angle=15.0, 
         launch_freq_GHz=72.5, 
         port_width=0.01, 
@@ -408,6 +534,6 @@ if __name__ == '__main__':
         ne_path = '\\source_data\\ne_189998_3000ms_quinn.dat', 
         topfile_path = '\\source_data\\topfile_189998_3000ms_quinn.json',
         num_RZ = 25,
-        plot=True,
-        save=False,
+        plot=False,
+        save=True,
         )
