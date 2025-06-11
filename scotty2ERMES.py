@@ -214,8 +214,7 @@ def get_pol_from_smits(k_vec: np.array, B_entry_vec_XYZ: np.array, launch_freq_G
 
     return rho_hat_perp, mod_E_rho, mod_E_eta
 
-# RENAME THIS CUS IT'S MISLEADING
-def scottyInputData2ERMES(
+def process_scotty_input_data(
     ne_path: str,
     topfile_path: str,
     filename: str,
@@ -250,7 +249,7 @@ def scottyInputData2ERMES(
         
     Returns:
         entry_point (array): Coordinates of point of entry defined by intersection of the last closed flux surface and the initial launch beam
-        B_entry_vec (array): B field at entry point of beam into plasma
+        B_entry_vec_RtZ (array): B field at entry point of beam into plasma
         Plots ne in R,Z space w.r.t pol flux and saves a .csv files of ne, R, Z, Br, Bt, Bz for ERMES (Need to be converted using fullwavedensfile.py & fullwavemagfile.py)
     """
     path = os.getcwd() + '\\'
@@ -325,7 +324,7 @@ def scottyInputData2ERMES(
     else:
         entry_point = [dt.inputs.initial_position.values[0], dt.inputs.initial_position.values[2]]
         
-    B_entry_vec = np.array([
+    B_entry_vec_RtZ = np.array([
         Br_spline.ev(entry_point[0], entry_point[1]),
         Bt_spline.ev(entry_point[0], entry_point[1]),
         Bz_spline.ev(entry_point[0], entry_point[1])
@@ -383,7 +382,7 @@ def scottyInputData2ERMES(
         ax.set_aspect('equal')
         plt.show()
         
-    return entry_point, B_entry_vec
+    return entry_point, B_entry_vec_RtZ
 
 def get_ERMES_parameters(
     dt: datatree.DataTree = None,
@@ -485,7 +484,7 @@ def get_ERMES_parameters(
     trimmed_yd3 = trimmed_yd1 - (trimmed_xd2 - trimmed_xd1)*tan(launch_angle_rad)
     
     # Convert Scotty input files into RZ format (& Do some sanity plots)
-    entry_point, B_entry_vec_RtZ = scottyInputData2ERMES(
+    entry_point, B_entry_vec_RtZ = process_scotty_input_data(
         ne_path, 
         topfile_path, 
         filename = filename,
