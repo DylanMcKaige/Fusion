@@ -7,24 +7,24 @@ Spits out .txt and .csv files of all the necessary data.
 TODO
 1. Run in ERMES and compare to scotty (7 deg done, 15 deg done)
 2. Project pol onto rho,eta plane
-3. Figure out E0 -> Matthew 7 valerian & Ruben's script
+3. Figure out E0 -> Matthew & valerian & Ruben's script
 
 References
     [1] Two dimensional full-wave simulations of Doppler back-scattering in tokamak plasmas with COMSOL by Quinn Pratt et al (in-progress paper)
     [2] https://www.edmundoptics.com/knowledge-center/tech-tools/gaussian-beams/
     [3] ERMES_20 Manual by Ruben Otin, pg 43-44
     [4] V. H. Hall-Chen, F. I. Parra, and J. C. Hillesheim, “Beam model of Doppler backscattering,” Plasma Phys. Control. Fusion, vol. 64, no. 9, p. 095002, Sep. 2022, doi: 10.1088/1361-6587/ac57a1.
-
+    [5] F. M. A. Smits, “ELLIPTICAL POLARISATION FOR OBLIQUE EC-WAVE LAUNCH”.
 
 Written by Dylan James Mc Kaige
 Created: 16/5/2025
-Updated: 3/6/2025
+Updated: 11/6/2025
 """
 import os, json, datatree
 import numpy as np
 import pandas as pd
-from math import sin, cos, sqrt, fabs
-from scipy.constants import c, pi
+from math import sin, cos, tan, acos, atan, sqrt, fabs
+from scipy.constants import c, pi, m_e, m_p, elementary_charge, epsilon_0
 from scipy.interpolate import RectBivariateSpline, UnivariateSpline
 from matplotlib import pyplot as plt
 
@@ -49,7 +49,6 @@ def RtZ_to_XYZ(a: np.array) -> np.array:
     b = np.array([a[0], a[2], -a[1]])
     return b
     
-
 def load_scotty_data(path: str) -> datatree.DataTree:
     """
     Load data from scotty and return the datatree.
@@ -145,6 +144,77 @@ def get_pol_from_scotty(dt: datatree.DataTree):
     
     return e_hat_XYZ
 
+def rotate_rodrigues(a: np.array, b: np.array, theta) -> np.array:
+    """
+    Rotate vector a about b by an angle of theta using Rodrigues' formula
+
+    Args:
+        a (np.array): The vector to be rotated about b
+        b (np.array): The vector of reference
+        theta (float or array): Angle of rotation following right-hand rule, relative to a
+
+    Returns:
+        a_prime (np.array): The rotated vector
+    """
+    bcrossa = np.reshape(np.cross(b, a), (3,1))
+    bdota = np.dot(b, a)
+    a = np.reshape(a, (3,1))
+    b = np.reshape(b, (3,1))
+    a_prime = a*(np.reshape(np.cos(theta), (1, len(theta)))) + \
+        bcrossa*(np.reshape(np.sin(theta), (1, len(theta)))) + \
+            b*bdota*(np.ones(len(theta)) - (np.reshape(np.cos(theta), (1, len(theta)))))
+    return a_prime.T
+
+def get_pol_from_smits(k_vec: np.array, B_entry_vec_XYZ: np.array, launch_freq_GHz: float, E0: float):
+    """
+    Get the polarization vector and values of E_perp and E_par using Smits [5]
+    
+    Args:
+        k_vec (np.array): k vector 
+        B_entry_vec_XYZ (np.array): B vector at point of entry
+        launch_freq_GHz (float): Launch frequency in GHz
+        E0 (float): E0 value
+
+    Returns:
+        rho_hat (array): Polarization vector in XYZ basis
+        mod_E_par (float): Mod E_par in ERMES
+        mod_E_perp (float): Mod E_per in ERMES
+    """
+    # Normalize to make life simpler
+    k_vec_hat = k_vec/np.linalg.norm(k_vec)
+    B_entry_vec_XYZ_hat = B_entry_vec_XYZ/np.linalg.norm(B_entry_vec_XYZ)
+    
+    # Angle between k and b
+    theta = acos(np.dot(k_vec_hat, B_entry_vec_XYZ_hat))
+    
+    # c from [5]
+    C = (1.6e-19*np.linalg.norm(B_entry_vec_XYZ) / 9.11e-31) / (2*pi*launch_freq_GHz*1e9)
+    p_prime = sqrt(sin(theta)**4 + 4*cos(theta)**2 / C**2)
+    # Angle of rho above kb plane and perp to k for QX-mode
+    gamma = atan(-2*cos(theta) / (C*(sin(theta)**2 + p_prime)) ) # Gamma from theta -> should have BEST coupling!
+    #gamma = np.linspace(0, 2*pi, 36, endpoint = 0)
+    #print(gamma*180/pi)
+    #gamma = [9]
+    #print(gamma*180/pi)
+    
+    # Get the rho unit vector that is perp to k and b. This is our initial pol
+    rho_hat_perp = np.cross(k_vec_hat, B_entry_vec_XYZ_hat) 
+    theta_rho = np.linspace(0, 2*pi, 10, endpoint=False)
+    print(theta_rho*180/pi)
+    rho_hat_rotated = rotate_rodrigues(rho_hat_perp, k_vec_hat, theta_rho)
+           
+    # Get the ratio
+    mod_E_rho = np.sqrt(E0**2 / (1 + np.tan(gamma)**2))# rho_hat_kb
+    mod_E_eta = np.sqrt(E0**2 - mod_E_rho**2) # eta_hat_kb
+    
+    print(f'Gamma: {gamma*180/pi:.5}')
+    print(f'E_par: {mod_E_rho:.5}')
+    print(f'E_perp: {mod_E_eta:.5}')
+    print(rho_hat_rotated)
+
+    return rho_hat_perp, mod_E_rho, mod_E_eta
+
+# RENAME THIS CUS IT'S MISLEADING
 def scottyInputData2ERMES(
     ne_path: str,
     topfile_path: str,
@@ -226,6 +296,21 @@ def scottyInputData2ERMES(
     Bt_vals_ERMES = Bt_spline.ev(R_grid_to_ERMES, Z_grid_to_ERMES)
     Bz_vals_ERMES = Bz_spline.ev(R_grid_to_ERMES, Z_grid_to_ERMES)
     
+    # Get cut-offs and resonances
+    launch_freq_GHz = 72.5
+    w = 2*pi*launch_freq_GHz*1e9
+    w_ce = elementary_charge*np.sqrt(Br_vals_ERMES**2 + Bt_vals_ERMES**2 + Bz_vals_ERMES**2)/m_e # (Z,R)
+    w_pe = np.sqrt(ne_vals_to_ERMES*elementary_charge**2 / (epsilon_0*m_e)) # (Z,R)
+    
+    # assuming it's a H1 plasma
+    w_ci = elementary_charge*np.sqrt(Br_vals_ERMES**2 + Bt_vals_ERMES**2 + Bz_vals_ERMES**2)/m_p # (Z,R)
+    w_pi = np.sqrt(ne_vals_to_ERMES*elementary_charge**2 / (epsilon_0*m_p)) # (Z,R)
+    
+    w_UH = np.sqrt(w_pe**2 + w_ce**2) - w
+    w_LH = np.sqrt(w_ce**2 * w_pi**2 / (w_ce**2 + w_pe**2)) - w
+    
+    w_R = np.sqrt(w_pe**2 + w_pi**2 + (w_ci + w_ce)**2 / 4) - (w_ci - w_ce)/2 - w
+    
     # Get the line from launcher to plasma then find the point where ne goes from 0 to +ve, this is the point of entry of the beam into the plasma
     # Only used if no Scotty output file used
     if dt is None:
@@ -259,13 +344,15 @@ def scottyInputData2ERMES(
         np.savetxt(filename + "ne_ERMES.csv", ne_vals_to_ERMES.T, delimiter=",", fmt="%.6e")
     
     if plot:
+        w_levels = [0]#np.linspace(-0.01*w, 0.01, 10, endpoint=True)
+        
         plt.figure(figsize=(8, 6))
 
         cf = plt.contourf(R_grid, Z_grid, ne_vals_total, levels=100, cmap='plasma')
         pol_flux_levels = np.linspace(0.0, 1.0, 11)
         cs = plt.contour(R_grid, Z_grid, pol_flux_vals, levels=pol_flux_levels, colors='black', linewidths=0.8)
+        
         plt.clabel(cs, fmt=r'%.1f', fontsize=8, colors='black')
-
         plt.colorbar(cf, label=r'$n_e\ (10^{19}\ \mathrm{m}^{-3})$')
         plt.xlabel("R [m]")
         plt.ylabel("Z [m]")
@@ -277,6 +364,9 @@ def scottyInputData2ERMES(
         cf = plt.contourf(R_grid_to_ERMES, Z_grid_to_ERMES, ne_vals_to_ERMES, levels=100, cmap='plasma')
         pol_flux_levels = np.linspace(0.0, 1.0, 11)
         cs = plt.contour(R_grid_to_ERMES, Z_grid_to_ERMES, pol_flux_vals_to_ERMES, levels=pol_flux_levels, colors='black', linewidths=0.8)
+        plt.contour(R_grid_to_ERMES, Z_grid_to_ERMES, w_R, levels = w_levels, colors='white', linewidths=2)
+        plt.contour(R_grid_to_ERMES, Z_grid_to_ERMES, w_UH, levels = w_levels, colors='blue', linewidths=2)
+        plt.contour(R_grid_to_ERMES, Z_grid_to_ERMES, w_LH, levels = w_levels, colors='green', linewidths=2)
         plt.clabel(cs, fmt=r'%.1f', fontsize=8, colors='black')
         plt.scatter(*zip(*ERMES_port), s = 2, color='white')
         plt.scatter(*zip(entry_point), s = 2, color='white')
@@ -284,9 +374,13 @@ def scottyInputData2ERMES(
         plt.colorbar(cf, label=r'$n_e\ (10^{19}\ \mathrm{m}^{-3})$')
         plt.xlabel("R [m]")
         plt.ylabel("Z [m]")
+        plt.xlim(ERMES_R[0], ERMES_R[1])
+        plt.ylim(ERMES_Z[0], ERMES_Z[1])
         plt.title(r'Heatmap of $n_e(R,Z)$')
-        plt.axis('equal')
-        plt.tight_layout()
+        
+        ax = plt.gca()
+        ax.use_sticky_edges = True
+        ax.set_aspect('equal')
         plt.show()
         
     return entry_point, B_entry_vec
@@ -364,15 +458,6 @@ def get_ERMES_parameters(
     yw = launch_Z + distance_to_launcher*sin(launch_angle_rad) # Centre of waist
     
     # This formula is from a .txt file from UCLA collaborators. I didn't look for a proper source/derivation of this yet
-    ### TO UPDATE 
-    """
-    Eventually I need to get E_rho, E_eta, @_rho, @_eta as the module and phase 
-    of E in the major and minor axes where rho is pol vector, eta = k x rho where k is 
-    wave vector in (X,Y,Z)
-    
-    I think that the norm of E_rho and E_eta should be equal to E_0 from [4]? Where we set A_ant to 1 for convenience.
-    This leads me to believe that E_0 is det(im(psi_w_entry))/det(im(psi_w_ant)) ** 1/4? Since g should be constant until the ray JUST enters the plasa
-    """
     z0 = 377 # Impedance of free space
     E0 = sqrt(z0*2*1/(w0*sqrt(pi/2))) # For P_in = 1 W/m
     
@@ -388,6 +473,16 @@ def get_ERMES_parameters(
     # If padding is too small, will cause errors in ERMES OR mesh generation will take stupidly long... I don't make the rules!
     xd1, yd0 = xp11 + 0.005, yp01 - 0.005 
     xd0, yd1 = xd1-domain_size, yd0+domain_size
+    
+    # More slimmed down with an initial guess, within bounds of original domain so no new ne or B need to be calculated. 4 sided figure with xpyp being bottom right, then go clockwise.
+    trimmed_xd0 = xd0
+    trimmed_yd0 = yp0 + (xp0-trimmed_xd0)*tan(launch_angle_rad)
+    trimmed_xd2 = xp1
+    trimmed_yd2 = yd1
+    trimmed_yd1 = trimmed_yd2
+    trimmed_xd1 = trimmed_xd0 + (trimmed_yd1 - trimmed_yd0)*tan(launch_angle_rad)
+    trimmed_xd3 = trimmed_xd2
+    trimmed_yd3 = trimmed_yd1 - (trimmed_xd2 - trimmed_xd1)*tan(launch_angle_rad)
     
     # Convert Scotty input files into RZ format (& Do some sanity plots)
     entry_point, B_entry_vec_RtZ = scottyInputData2ERMES(
@@ -409,11 +504,13 @@ def get_ERMES_parameters(
     # linear pol vec at launch point = beam k X B field at launch point in (X,Y,Z)
     k_vec = np.array([kx_norm, ky_norm, 0])
     lin_pol_vec = np.cross(k_vec, B_entry_vec_XYZ)
-    lin_pol_vec = lin_pol_vec/np.linalg.norm(lin_pol_vec)
-    
+
     # Elliptical pol vector from Scotty
     if dt is not None: ellip_pol_vec = get_pol_from_scotty(dt)
     else: ellip_pol_vec = np.array([0, 0, 0])
+    
+    # Polarization from Smits
+    rho_hat, mod_E_par, mod_E_perp = get_pol_from_smits(k_vec, B_entry_vec_XYZ, launch_freq_GHz, E0)
 
     # Arrays for saving
     # Surely there is a neater way of doing this, but I'm lazy and want to get this working first before making it pretty
@@ -428,6 +525,10 @@ def get_ERMES_parameters(
         xd1, 
         xd0, 
         xd1, 
+        xp0,
+        trimmed_xd0,
+        trimmed_xd1,
+        trimmed_xd3,
         xw,
         entry_point[0],
         ]
@@ -443,6 +544,10 @@ def get_ERMES_parameters(
         yd0, 
         yd1, 
         yd1, 
+        yp0,
+        trimmed_yd0,
+        trimmed_yd1,
+        trimmed_yd3,
         yw,
         entry_point[1],
         ]
@@ -457,6 +562,10 @@ def get_ERMES_parameters(
         'Domain BR    ', 
         'Domain TL    ', 
         'Domain TR    ', 
+        'Trimmed Domain p0    ', 
+        'Trimmed Domain d0    ',
+        'Trimmed Domain d1    ',
+        'Trimmed Domain d3    ',
         'Waist Position    ',
         'Point of Entry    ',
         ]
@@ -482,7 +591,12 @@ def get_ERMES_parameters(
         ellip_pol_vec[0],
         ellip_pol_vec[1],
         ellip_pol_vec[2],
+        rho_hat[0],
+        rho_hat[1],
+        rho_hat[2],
         E0, 
+        mod_E_par,
+        mod_E_perp,
         ]
     )
     params_names = np.array([
@@ -504,7 +618,12 @@ def get_ERMES_parameters(
         'Ellipitcal polx (normalized)    ', 
         'Ellipitcal poly (normalized)    ', 
         'Ellipitcal polz (normalized)    ', 
+        'Smits polx (normalized)    ',
+        'Smits poly (normalized)    ',
+        'Smits polz (normalized)    ',
         'E0    ', 
+        'E par (ERMES)    ',
+        'E perp (ERMES)    ',
         ]
     )
     
@@ -535,5 +654,5 @@ if __name__ == '__main__':
         topfile_path = '\\source_data\\topfile_189998_3000ms_quinn.json',
         num_RZ = 25,
         plot=False,
-        save=True,
+        save=False,
         )
