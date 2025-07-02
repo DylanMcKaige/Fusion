@@ -23,7 +23,7 @@ Updated: 11/6/2025
 import os, json, datatree
 import numpy as np
 import pandas as pd
-from math import sin, cos, tan, acos, atan, sqrt, fabs
+from math import sin, cos, tan, acos, atan, atan2, sqrt, fabs
 from scipy.constants import c, pi, m_e, m_p, elementary_charge, epsilon_0
 from scipy.interpolate import RectBivariateSpline, UnivariateSpline
 from matplotlib import pyplot as plt
@@ -151,7 +151,7 @@ def rotate_rodrigues(a: np.array, b: np.array, theta) -> np.array:
     Args:
         a (np.array): The vector to be rotated about b
         b (np.array): The vector of reference
-        theta (float or array): Angle of rotation following right-hand rule, relative to a
+        theta (float or array): Angle of rotation following right-hand rule, relative to a, in rad
 
     Returns:
         a_prime (np.array): The rotated vector
@@ -165,7 +165,25 @@ def rotate_rodrigues(a: np.array, b: np.array, theta) -> np.array:
             b*bdota*(np.ones(len(theta)) - (np.reshape(np.cos(theta), (1, len(theta)))))
     return a_prime.T
 
-def get_pol_from_smits(k_vec: np.array, B_entry_vec_XYZ: np.array, launch_freq_GHz: float, E0: float):
+def get_psi_normal_entry(psi_spline: RectBivariateSpline, R_entry, Z_entry) -> np.array:
+    """
+    Get the outward normal vector to the LCFS at the point of entry
+
+    Args:
+        psi_spline (RectBivariateSpline): _description_
+        R_entry (_type_): _description_
+        Z_entry (_type_): _description_
+
+    Returns:
+        np.array: _description_
+    """
+    dpsi_dR = psi_spline.ev(R_entry, Z_entry, dx=1, dy = 0)
+    dpsi_dZ = psi_spline.ev(R_entry, Z_entry, dx=0, dy = 1)
+    
+    psi_normal = np.array([dpsi_dR, dpsi_dZ, 0])
+    return psi_normal
+
+def get_pol_from_smits(k_vec: np.array, B_entry_vec_XYZ: np.array, xt_smits_hat: np.array, yt_smits_hat: np.array, zt_smits_hat: np.array, launch_freq_GHz: float, E0: float):
     """
     Get the polarization vector and values of E_perp and E_par using Smits [5]
     
@@ -179,6 +197,7 @@ def get_pol_from_smits(k_vec: np.array, B_entry_vec_XYZ: np.array, launch_freq_G
         rho_hat (array): Polarization vector in XYZ basis
         mod_E_par (float): Mod E_par in ERMES
         mod_E_perp (float): Mod E_per in ERMES
+        rho_hat_rotated_set (array): Array of [pol theta, pol vector]
     """
     # Normalize to make life simpler
     k_vec_hat = k_vec/np.linalg.norm(k_vec)
@@ -189,30 +208,52 @@ def get_pol_from_smits(k_vec: np.array, B_entry_vec_XYZ: np.array, launch_freq_G
     
     # c from [5]
     C = (1.6e-19*np.linalg.norm(B_entry_vec_XYZ) / 9.11e-31) / (2*pi*launch_freq_GHz*1e9)
+    
     p_prime = sqrt(sin(theta)**4 + 4*cos(theta)**2 / C**2)
     # Angle of rho above kb plane and perp to k for QX-mode
-    gamma = atan(-2*cos(theta) / (C*(sin(theta)**2 + p_prime)) ) # Gamma from theta -> should have BEST coupling!
-    #gamma = np.linspace(0, 2*pi, 36, endpoint = 0)
-    #print(gamma*180/pi)
-    #gamma = [9]
-    #print(gamma*180/pi)
+    gamma = atan(-2*cos(theta) / (C*(sin(theta)**2 + p_prime)) ) # Gamma from theta from [5] (best coupling)
     
-    # Get the rho unit vector that is perp to k and b. This is our initial pol
+    # Get the rho unit vector that is perp to k and b. This is our initial & supposedly ideal pol ( It is not )
     rho_hat_perp = np.cross(k_vec_hat, B_entry_vec_XYZ_hat) 
-    theta_rho = np.linspace(0, 2*pi, 10, endpoint=False)
-    print(theta_rho*180/pi)
+    #print(rho_hat_perp)
+    # To test for different pol vectors
+    theta_rho = np.arange(start = -pi/2, stop = pi/2, step = pi/18) # 10 deg increments
+
     rho_hat_rotated = rotate_rodrigues(rho_hat_perp, k_vec_hat, theta_rho)
-           
-    # Get the ratio
+    #print(theta_rho*180/pi)
+    #print(rho_hat_rotated)
+    #print(gamma*180/pi) 
     mod_E_rho = np.sqrt(E0**2 / (1 + np.tan(gamma)**2))# rho_hat_kb
     mod_E_eta = np.sqrt(E0**2 - mod_E_rho**2) # eta_hat_kb
     
-    print(f'Gamma: {gamma*180/pi:.5}')
-    print(f'E_par: {mod_E_rho:.5}')
-    print(f'E_perp: {mod_E_eta:.5}')
-    print(rho_hat_rotated)
+    
+    #Kx = (2j*cos(theta)) / (C*sin(theta)**2 + sqrt(C**2 * sin(theta)**4 + 4*cos(theta)**2))
+    #Ko = (2j*cos(theta)) / (C*sin(theta)**2 - sqrt(C**2 * sin(theta)**4 + 4*cos(theta)**2))
+    #Ex = (1/(Ko-Kx)) * np.array([Ko*mod_E_rho - mod_E_eta, mod_E_rho - Kx*mod_E_eta])
+    #Eo = (1/(Ko-Kx)) * np.array([-Kx*mod_E_rho + mod_E_eta, -mod_E_rho + Ko*mod_E_eta])
+    #Xfract = np.linalg.norm(Ex)**2 / (np.linalg.norm(Eo)**2 + np.linalg.norm(Ex)**2)
+    #print('Xfract: ', Xfract)
+    #print(mod_E_eta)
+    #print(mod_E_rho)
+    
+    """
+    # I'm deprecating this cus I think it's bs. Keep as RHC (thetarho = 0, thetatea = -90)
+    # Polairzation tilt from [5]
+    # I think Smits is FULL OF FUCKING SHIT and it's just an arbitrary angle between xtzt plane and E par (E eta) which is NOT THE POL TILT WTFFF
+    B_smits = np.dot(B_entry_vec_XYZ, yt_smits_hat)*yt_smits_hat + np.dot(B_entry_vec_XYZ, zt_smits_hat)*zt_smits_hat#B_entry_vec_XYZ_hat - (np.dot(B_entry_vec_XYZ_hat, xt_smits_hat))*xt_smits_hat
+    B_smits_hat = B_smits/np.linalg.norm(B_smits)
+    sign = np.sign(np.dot(B_smits, yt_smits_hat))
 
-    return rho_hat_perp, mod_E_rho, mod_E_eta
+    # Angle between B and Z (or B and t if in that coordinate system), positive if pointing
+    eps = acos(np.dot(B_smits_hat, zt_smits_hat)/ (np.linalg.norm(B_smits_hat)*(np.linalg.norm(zt_smits_hat))) )
+    
+    # Smits polarization tilt, theta is pi/2 here because of how B is defined
+    phi = acos(cos(eps)/sin(pi/2))
+    print(phi*180/pi)
+    print(phi)
+    """
+
+    return rho_hat_perp, mod_E_rho, mod_E_eta, np.column_stack((theta_rho*180/pi, rho_hat_rotated))
 
 def process_scotty_input_data(
     ne_path: str,
@@ -222,6 +263,7 @@ def process_scotty_input_data(
     plot: bool = True,
     save: bool = True,
     path: str = os.getcwd() + '\\',
+    save_path: str = os.getcwd() + '\\',
     ERMES_R = None,
     ERMES_Z = None,
     ERMES_port = None,
@@ -252,7 +294,6 @@ def process_scotty_input_data(
         B_entry_vec_RtZ (array): B field at entry point of beam into plasma
         Plots ne in R,Z space w.r.t pol flux and saves a .csv files of ne, R, Z, Br, Bt, Bz for ERMES (Need to be converted using fullwavedensfile.py & fullwavemagfile.py)
     """
-    path = os.getcwd() + '\\'
     
     # Load in ne data and spline it
     ne_path = path + ne_path
@@ -323,7 +364,12 @@ def process_scotty_input_data(
         )
     else:
         entry_point = [dt.inputs.initial_position.values[0], dt.inputs.initial_position.values[2]]
-        
+    
+    psi_normal_at_entry = get_psi_normal_entry(pol_flux_spline, entry_point[0], entry_point[1])
+    xt_smits_hat = -psi_normal_at_entry/np.linalg.norm(psi_normal_at_entry)
+    zt_smits_hat = np.array([0,0,1])
+    yt_smits_hat = np.cross(zt_smits_hat, xt_smits_hat)
+
     B_entry_vec_RtZ = np.array([
         Br_spline.ev(entry_point[0], entry_point[1]),
         Bt_spline.ev(entry_point[0], entry_point[1]),
@@ -334,13 +380,13 @@ def process_scotty_input_data(
     RZ_ERMES = np.column_stack((R_range, Z_range))
 
     if save:
-        np.savetxt(filename + "RZ_ERMES.csv", RZ_ERMES, delimiter=",", fmt="%.6e")
+        np.savetxt(save_path + filename + "RZ_ERMES.csv", RZ_ERMES, delimiter=",", fmt="%.6e")
 
-        np.savetxt(filename + "Br_ERMES.csv", Br_vals_ERMES.T, delimiter=",", fmt="%.6e")
-        np.savetxt(filename + "Bz_ERMES.csv", Bz_vals_ERMES.T, delimiter=",", fmt="%.6e")
-        np.savetxt(filename + "Bt_ERMES.csv", Bt_vals_ERMES.T, delimiter=",", fmt="%.6e")
+        np.savetxt(save_path + filename + "Br_ERMES.csv", Br_vals_ERMES.T, delimiter=",", fmt="%.6e")
+        np.savetxt(save_path + filename + "Bz_ERMES.csv", Bz_vals_ERMES.T, delimiter=",", fmt="%.6e")
+        np.savetxt(save_path + filename + "Bt_ERMES.csv", Bt_vals_ERMES.T, delimiter=",", fmt="%.6e")
 
-        np.savetxt(filename + "ne_ERMES.csv", ne_vals_to_ERMES.T, delimiter=",", fmt="%.6e")
+        np.savetxt(save_path + filename + "ne_ERMES.csv", ne_vals_to_ERMES.T, delimiter=",", fmt="%.6e")
     
     if plot:
         w_levels = [0]#np.linspace(-0.01*w, 0.01, 10, endpoint=True)
@@ -382,7 +428,7 @@ def process_scotty_input_data(
         ax.set_aspect('equal')
         plt.show()
         
-    return entry_point, B_entry_vec_RtZ
+    return entry_point, B_entry_vec_RtZ, xt_smits_hat, yt_smits_hat, zt_smits_hat
 
 def get_ERMES_parameters(
     dt: datatree.DataTree = None,
@@ -445,6 +491,14 @@ def get_ERMES_parameters(
     launch_angle_rad = launch_angle*degtorad
     filename = str(launch_angle) + "_degree_" + str(launch_freq_GHz) + "GHz_"
     
+    # Create subdirectory for saving:
+    if save:
+        if os.path.isdir(path + filename + 'folder'):
+            path = path + filename + 'folder' + '\\'
+        else:
+            os.makedirs(path + filename + 'folder')
+            path = path + filename + 'folder' + '\\'
+    
     # Initial calculations
     distance_to_launcher = fabs((radius_of_curv * pi**2 * launch_beam_width**4)/(launch_beam_wavelength**2 * radius_of_curv**2+pi**2 * launch_beam_width**4))
     z_R = fabs((launch_beam_wavelength*radius_of_curv*distance_to_launcher)/(pi*launch_beam_width**2))
@@ -484,11 +538,12 @@ def get_ERMES_parameters(
     trimmed_yd3 = trimmed_yd1 - (trimmed_xd2 - trimmed_xd1)*tan(launch_angle_rad)
     
     # Convert Scotty input files into RZ format (& Do some sanity plots)
-    entry_point, B_entry_vec_RtZ = process_scotty_input_data(
+    entry_point, B_entry_vec_RtZ, xt_smits_hat, yt_smits_hat, zt_smits_hat = process_scotty_input_data(
         ne_path, 
         topfile_path, 
         filename = filename,
         plot=plot,
+        save=save,
         dt=dt,
         ERMES_R=(xd0, xd1), 
         ERMES_Z=(yd0, yd1), 
@@ -496,6 +551,7 @@ def get_ERMES_parameters(
         ERMES_launch_centre=(xp, yp), 
         launch_angle_rad=launch_angle_rad,
         num_RZ=num_RZ,
+        save_path=path
         )
     
     B_entry_vec_XYZ = RtZ_to_XYZ(B_entry_vec_RtZ)
@@ -509,7 +565,7 @@ def get_ERMES_parameters(
     else: ellip_pol_vec = np.array([0, 0, 0])
     
     # Polarization from Smits
-    rho_hat, mod_E_par, mod_E_perp = get_pol_from_smits(k_vec, B_entry_vec_XYZ, launch_freq_GHz, E0)
+    rho_hat_perp, mod_E_par, mod_E_perp, rho_hat_rotated_set = get_pol_from_smits(k_vec, B_entry_vec_XYZ, xt_smits_hat, yt_smits_hat, zt_smits_hat, launch_freq_GHz, E0)
 
     # Arrays for saving
     # Surely there is a neater way of doing this, but I'm lazy and want to get this working first before making it pretty
@@ -555,12 +611,13 @@ def get_ERMES_parameters(
         'Source Position (front face of port)    ', 
         'Port BL    ', 
         'Port TL    ', 
-        'Port BR    ', 'Port TR    ', 
+        '(COMSOL) Port BR    ', 
+        '(COMSOL) Port TR    ', 
         'Launch Position    ', 
-        'Domain BL    ', 
-        'Domain BR    ', 
-        'Domain TL    ', 
-        'Domain TR    ', 
+        '(COMSOL) Domain BL    ', 
+        '(COMSOL) Domain BR    ', 
+        '(COMSOL) Domain TL    ', 
+        '(COMSOL) Domain TR    ', 
         'Trimmed Domain p0    ', 
         'Trimmed Domain d0    ',
         'Trimmed Domain d1    ',
@@ -590,9 +647,9 @@ def get_ERMES_parameters(
         ellip_pol_vec[0],
         ellip_pol_vec[1],
         ellip_pol_vec[2],
-        rho_hat[0],
-        rho_hat[1],
-        rho_hat[2],
+        rho_hat_perp[0],
+        rho_hat_perp[1],
+        rho_hat_perp[2],
         E0, 
         mod_E_par,
         mod_E_perp,
@@ -632,6 +689,8 @@ def get_ERMES_parameters(
         # There's probably a better way to do this 
         with open(path + filename + 'ERMES_params', 'a') as file:
             np.savetxt(file, np.array([params_names, params_val], dtype=object).T, delimiter=' ', header='Beam Params', fmt = '%s')
+        with open(path + filename + 'ERMES_params', 'a') as file:
+            np.savetxt(file, rho_hat_rotated_set, header='Rotated Polarization Vector', fmt = '%s')
 
     if plot:
         plt.scatter(points_x, points_y, s = 2)
@@ -653,5 +712,5 @@ if __name__ == '__main__':
         topfile_path = '\\source_data\\topfile_189998_3000ms_quinn.json',
         num_RZ = 25,
         plot=False,
-        save=False,
+        save=True,
         )
