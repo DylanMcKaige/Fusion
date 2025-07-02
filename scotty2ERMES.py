@@ -5,9 +5,7 @@ Transposes ne data to R,Z coords as well
 Spits out .txt and .csv files of all the necessary data. 
 
 TODO
-1. Run in ERMES and compare to scotty (7 deg done, 15 deg done)
-2. Project pol onto rho,eta plane
-3. Figure out E0 -> Matthew & valerian & Ruben's script
+1. Tidy up saving?
 
 References
     [1] Two dimensional full-wave simulations of Doppler back-scattering in tokamak plasmas with COMSOL by Quinn Pratt et al (in-progress paper)
@@ -18,7 +16,7 @@ References
 
 Written by Dylan James Mc Kaige
 Created: 16/5/2025
-Updated: 11/6/2025
+Updated: 2/7/2025
 """
 import os, json, datatree
 import numpy as np
