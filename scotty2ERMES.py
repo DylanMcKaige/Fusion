@@ -181,7 +181,7 @@ def get_psi_normal_entry(psi_spline: RectBivariateSpline, R_entry, Z_entry) -> n
     psi_normal = np.array([dpsi_dR, dpsi_dZ, 0])
     return psi_normal
 
-def get_pol_from_smits(k_vec: np.array, B_entry_vec_XYZ: np.array, xt_smits_hat: np.array, yt_smits_hat: np.array, zt_smits_hat: np.array, launch_freq_GHz: float, E0: float):
+def get_pol_from_smits(k_vec: np.array, B_entry_vec_XYZ: np.array, launch_freq_GHz: float, E0: float):
     """
     Get the polarization vector and values of E_perp and E_par using Smits [5]
     
@@ -206,21 +206,19 @@ def get_pol_from_smits(k_vec: np.array, B_entry_vec_XYZ: np.array, xt_smits_hat:
     
     # c from [5]
     C = (1.6e-19*np.linalg.norm(B_entry_vec_XYZ) / 9.11e-31) / (2*pi*launch_freq_GHz*1e9)
-    
     p_prime = sqrt(sin(theta)**4 + 4*cos(theta)**2 / C**2)
+    
     # Angle of rho above kb plane and perp to k for QX-mode
     gamma = atan(-2*cos(theta) / (C*(sin(theta)**2 + p_prime)) ) # Gamma from theta from [5] (best coupling)
     
-    # Get the rho unit vector that is perp to k and b. This is our initial & supposedly ideal pol ( It is not )
+    # Get the rho unit vector that is perp to k and b. This is our initial & supposedly ideal pol ( It is not, seems to be ~20deg off )
     rho_hat_perp = np.cross(k_vec_hat, B_entry_vec_XYZ_hat) 
-    #print(rho_hat_perp)
+
     # To test for different pol vectors
     theta_rho = np.arange(start = -pi/2, stop = pi/2, step = pi/18) # 10 deg increments
 
     rho_hat_rotated = rotate_rodrigues(rho_hat_perp, k_vec_hat, theta_rho)
-    #print(theta_rho*180/pi)
-    #print(rho_hat_rotated)
-    #print(gamma*180/pi) 
+
     mod_E_rho = np.sqrt(E0**2 / (1 + np.tan(gamma)**2))# rho_hat_kb
     mod_E_eta = np.sqrt(E0**2 - mod_E_rho**2) # eta_hat_kb
     
@@ -363,10 +361,7 @@ def process_scotty_input_data(
     else:
         entry_point = [dt.inputs.initial_position.values[0], dt.inputs.initial_position.values[2]]
     
-    psi_normal_at_entry = get_psi_normal_entry(pol_flux_spline, entry_point[0], entry_point[1])
-    xt_smits_hat = -psi_normal_at_entry/np.linalg.norm(psi_normal_at_entry)
-    zt_smits_hat = np.array([0,0,1])
-    yt_smits_hat = np.cross(zt_smits_hat, xt_smits_hat)
+    psi_normal_at_entry = get_psi_normal_entry(pol_flux_spline, entry_point[0], entry_point[1]) # Not needed
 
     B_entry_vec_RtZ = np.array([
         Br_spline.ev(entry_point[0], entry_point[1]),
@@ -407,9 +402,9 @@ def process_scotty_input_data(
         cf = plt.contourf(R_grid_to_ERMES, Z_grid_to_ERMES, ne_vals_to_ERMES, levels=100, cmap='plasma')
         pol_flux_levels = np.linspace(0.0, 1.0, 11)
         cs = plt.contour(R_grid_to_ERMES, Z_grid_to_ERMES, pol_flux_vals_to_ERMES, levels=pol_flux_levels, colors='black', linewidths=0.8)
-        plt.contour(R_grid_to_ERMES, Z_grid_to_ERMES, w_R, levels = w_levels, colors='white', linewidths=2)
-        plt.contour(R_grid_to_ERMES, Z_grid_to_ERMES, w_UH, levels = w_levels, colors='blue', linewidths=2)
-        plt.contour(R_grid_to_ERMES, Z_grid_to_ERMES, w_LH, levels = w_levels, colors='green', linewidths=2)
+        #plt.contour(R_grid_to_ERMES, Z_grid_to_ERMES, w_R, levels = w_levels, colors='white', linewidths=2)
+        #plt.contour(R_grid_to_ERMES, Z_grid_to_ERMES, w_UH, levels = w_levels, colors='blue', linewidths=2)
+        #plt.contour(R_grid_to_ERMES, Z_grid_to_ERMES, w_LH, levels = w_levels, colors='green', linewidths=2)
         plt.clabel(cs, fmt=r'%.1f', fontsize=8, colors='black')
         plt.scatter(*zip(*ERMES_port), s = 2, color='white')
         plt.scatter(*zip(entry_point), s = 2, color='white')
@@ -426,10 +421,11 @@ def process_scotty_input_data(
         ax.set_aspect('equal')
         plt.show()
         
-    return entry_point, B_entry_vec_RtZ, xt_smits_hat, yt_smits_hat, zt_smits_hat
+    return entry_point, B_entry_vec_RtZ
 
 def get_ERMES_parameters(
     dt: datatree.DataTree = None,
+    suffix: str = "",
     launch_angle: float = None,
     launch_freq_GHz: float = None,
     launch_positon: np.array = None,
@@ -450,6 +446,7 @@ def get_ERMES_parameters(
     
     Args:
         dt (DataTree): Scotty output file in .h5 format
+        suffix (str): Suffix for naming (e.g MAST-U, DII-D, etc), defaults to None
         launch_angle (float): Launch angle in degrees, w.r.t -ve R axis
         launch_freq_GHz (float): Launch frequency in GHz
         port_width (float): Width of port in ERMES in m, so far seems to be arbitrary
@@ -480,14 +477,14 @@ def get_ERMES_parameters(
         launch_freq_GHz = dt.inputs.launch_freq_GHz.values
         launch_beam_width = dt.inputs.launch_beam_width.values
         launch_beam_curvature = dt.inputs.launch_beam_curvature.values
-        launch_angle = fabs(dt.inputs.poloidal_launch_angle_Torbeam.values)
         launch_R = dt.inputs.launch_position.values[0]
         launch_Z = dt.inputs.launch_position.values[2]
         
     launch_beam_wavelength = c/(launch_freq_GHz*1e9)
     radius_of_curv = fabs(1/launch_beam_curvature)
     launch_angle_rad = launch_angle*degtorad
-    filename = str(launch_angle) + "_degree_" + str(launch_freq_GHz) + "GHz_"
+    
+    filename = suffix + str(launch_angle) + "_degree_" + str(launch_freq_GHz) + "GHz_"
     
     # Create subdirectory for saving:
     if save:
@@ -513,30 +510,51 @@ def get_ERMES_parameters(
     E0 = sqrt(z0*2*1/(w0*sqrt(pi/2))) # For P_in = 1 W/m
     
     # Port calculations
-    xp, yp = launch_R - dist_to_ERMES_port*cos(launch_angle_rad), launch_Z + dist_to_ERMES_port*sin(launch_angle_rad)
+    xp, yp = launch_R - dist_to_ERMES_port*cos(launch_angle_rad), launch_Z + dist_to_ERMES_port*sin(launch_angle_rad) # Centre of front face
     xp0, yp0 = xp - w_ERMES/2*sin(launch_angle_rad), yp - w_ERMES/2*cos(launch_angle_rad)
     xp1, yp1 = xp + w_ERMES/2*sin(launch_angle_rad), yp + w_ERMES/2*cos(launch_angle_rad)
+    
+    # For COMSOL
     xp01, yp01 = xp0 + port_width*cos(launch_angle_rad), yp0 - port_width*sin(launch_angle_rad)
     xp11, yp11 = xp1 + port_width*cos(launch_angle_rad), yp1 - port_width*sin(launch_angle_rad)
     
     # Domain calculations
-    # Arbitrary padding (~10 x order of mesh spacing?) so that the volume can be generated. 
-    # If padding is too small, will cause errors in ERMES OR mesh generation will take stupidly long... I don't make the rules!
-    xd1, yd0 = xp11 + 0.005, yp01 - 0.005 
-    xd0, yd1 = xd1-domain_size, yd0+domain_size
-    
-    # More slimmed down with an initial guess, within bounds of original domain so no new ne or B need to be calculated. 4 sided figure with xpyp being bottom right, then go clockwise.
-    trimmed_xd0 = xd0
-    trimmed_yd0 = yp0 + (xp0-trimmed_xd0)*tan(launch_angle_rad)
-    trimmed_xd2 = xp1
-    trimmed_yd2 = yd1
-    trimmed_yd1 = trimmed_yd2
-    trimmed_xd1 = trimmed_xd0 + (trimmed_yd1 - trimmed_yd0)*tan(launch_angle_rad)
-    trimmed_xd3 = trimmed_xd2
-    trimmed_yd3 = trimmed_yd1 - (trimmed_xd2 - trimmed_xd1)*tan(launch_angle_rad)
+    # Lazy fix for -ve Launch Angles
+    if np.sign(launch_angle) == 1:
+        # Arbitrary padding for plotting in Scotty
+        xd1, yd0 = xp11 + 0.005, yp01 - 0.005 
+        xd0, yd1 = xd1-domain_size, yd0+domain_size
+        
+        # More slimmed down with an initial guess, within bounds of original domain so no new ne or B need to be calculated. 4 sided figure with xpyp being bottom right, then go clockwise.
+        trimmed_xd0 = xd0
+        trimmed_yd0 = yp0 + (xp0-trimmed_xd0)*tan(launch_angle_rad)
+        trimmed_xd2 = xp1
+        trimmed_yd2 = yd1
+        trimmed_yd1 = trimmed_yd2
+        trimmed_xd1 = trimmed_xd0 + (trimmed_yd1 - trimmed_yd0)*tan(launch_angle_rad)
+        trimmed_xd3 = trimmed_xd2
+        trimmed_yd3 = trimmed_yd1 - (trimmed_xd2 - trimmed_xd1)*tan(launch_angle_rad)
+        
+        ERMES_Z=(yd0, yd1)
+    else:
+        # Arbitrary padding for plotting in Scotty
+        xd1, yd0 = xp01 + 0.005, yp11 + 0.005 
+        xd0, yd1 = xd1-domain_size, yd0-domain_size 
+        
+        # More slimmed down with an initial guess, within bounds of original domain so no new ne or B need to be calculated. 4 sided figure with xpyp being bottom right, then go clockwise.
+        trimmed_xd0 = xd0
+        trimmed_yd0 = yp0 - (xp0-trimmed_xd0)*tan(launch_angle_rad)
+        trimmed_xd2 = xp0
+        trimmed_yd2 = yd1
+        trimmed_yd1 = trimmed_yd2
+        trimmed_xd1 = trimmed_xd0 + (trimmed_yd1 - trimmed_yd0)*tan(launch_angle_rad)
+        trimmed_xd3 = trimmed_xd2
+        trimmed_yd3 = trimmed_yd1 - (trimmed_xd2 - trimmed_xd1)*tan(launch_angle_rad)
+        
+        ERMES_Z=(yd1, yd0)
     
     # Convert Scotty input files into RZ format (& Do some sanity plots)
-    entry_point, B_entry_vec_RtZ, xt_smits_hat, yt_smits_hat, zt_smits_hat = process_scotty_input_data(
+    entry_point, B_entry_vec_RtZ = process_scotty_input_data(
         ne_path, 
         topfile_path, 
         filename = filename,
@@ -544,7 +562,7 @@ def get_ERMES_parameters(
         save=save,
         dt=dt,
         ERMES_R=(xd0, xd1), 
-        ERMES_Z=(yd0, yd1), 
+        ERMES_Z=ERMES_Z, 
         ERMES_port=([xp0, yp0], [xp1, yp1], [xp01, yp01], [xp11, yp11]), 
         ERMES_launch_centre=(xp, yp), 
         launch_angle_rad=launch_angle_rad,
@@ -563,7 +581,7 @@ def get_ERMES_parameters(
     else: ellip_pol_vec = np.array([0, 0, 0])
     
     # Polarization from Smits
-    rho_hat_perp, mod_E_par, mod_E_perp, rho_hat_rotated_set = get_pol_from_smits(k_vec, B_entry_vec_XYZ, xt_smits_hat, yt_smits_hat, zt_smits_hat, launch_freq_GHz, E0)
+    rho_hat_perp, mod_E_par, mod_E_perp, rho_hat_rotated_set = get_pol_from_smits(k_vec, B_entry_vec_XYZ, launch_freq_GHz, E0)
 
     # Arrays for saving
     # Surely there is a neater way of doing this, but I'm lazy and want to get this working first before making it pretty
@@ -696,19 +714,53 @@ def get_ERMES_parameters(
         plt.show()
 
 if __name__ == '__main__':
+    # Maybe I could run scotty here as well so it is instantaenous lol
+    #"""
     get_ERMES_parameters(
-        dt=load_scotty_data('\\Output\\scotty_output_freq72.5_pol-15.0_rev.h5'),
+        dt=load_scotty_data('\\MAST-U\\scotty_output_freq32.5_pol-15.0_rev.h5'),
+        suffix="MAST-U_",
         launch_angle=15.0, 
-        launch_freq_GHz=72.5, 
+        launch_freq_GHz=32.5, 
         port_width=0.01, 
-        launch_positon=[3.01346,0,-0.09017], 
+        #launch_positon=[2.278,0,-0.01], 
+        #launch_beam_curvature=-0.7497156475519201, 
+        #launch_beam_width=0.07596928872724663, 
+        dist_to_ERMES_port=0.9, 
+        domain_size=0.45, 
+        ne_path = '\\MAST-U\\ne_45290_150ms.dat', 
+        topfile_path = '\\MAST-U\\topfile_45290_150ms.json',
+        num_RZ = 25,
+        plot=True,
+        save=True,
+        )
+    #"""
+    
+    #DIII-D
+    """
+    get_ERMES_parameters(
+        dt=load_scotty_data('\\Output\\scotty_output_freq72.5_pol-3.0_rev.h5'),
+        suffix="DIII-D_",
+        launch_angle=-15.0, 
+        launch_freq_GHz=40, 
+        port_width=0.01, 
+        #launch_positon=[2.278,0,-0.01], 
         launch_beam_curvature=-0.95, 
         launch_beam_width=0.125, 
-        dist_to_ERMES_port=0.65, 
+        dist_to_ERMES_port=0.55, 
         domain_size=0.45, 
         ne_path = '\\source_data\\ne_189998_3000ms_quinn.dat', 
         topfile_path = '\\source_data\\topfile_189998_3000ms_quinn.json',
         num_RZ = 25,
-        plot=False,
+        plot=True,
         save=True,
         )
+    
+    #"""
+    
+    """
+    Some notes on the work I am doing right now so that I don't forget
+    5,7,9,11,13,15,17 deg pol sweep on DIII-D & MAST-U
+    Compare w/ Scotty & analytical
+    
+    Interestingly, Scotty crashes for launch_angle = 9 deg on the DIII-D data , so I ran at 8.995 deg since 8.996 deg will crash. 
+    """
