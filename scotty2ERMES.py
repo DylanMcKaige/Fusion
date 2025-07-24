@@ -18,7 +18,7 @@ References
 
 Written by Dylan James Mc Kaige
 Created: 16/5/2025
-Updated: 22/7/2025
+Updated: 24/7/2025
 """
 import os, json, datatree
 import numpy as np
@@ -747,6 +747,21 @@ def calc_Eb_from_scotty(dt: datatree):
     print(np.max(Eb_tau))
     Eb_R_zeta_Z = np.column_stack([Eb_tau, tau_R, tau_zeta, tau_Z])
     print(Eb_R_zeta_Z)
+
+def ERMES_results_to_readable():
+    """
+    Placeholder while I figure out how to do
+    
+    Basically it will be
+    1) get XYZ coord of each mesh node
+    2) get mod E at each mesh node
+    3) map mod E at mech node to XYZ of mesh node
+    4) get XYZ of central ray
+    5) Trace mod E along central ray
+    6) Profit????
+    
+    This SHOULD letme easily comapre modE in ERMES and Scotty and to any theoretical ideal scenarios that have exact solutions (liek linear layer, etc)
+    """
 
 if __name__ == '__main__':
     # Maybe I could run scotty here as well so it is instantaenous lol
