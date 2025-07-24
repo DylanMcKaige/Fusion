@@ -2,6 +2,8 @@
 Convert Scotty parameters to ERMES parameters and generate the coords of all points for ERMES. 
 Transposes ne data to R,Z coords as well
 
+The shape of the domain here is specifically for DBS simulations.
+
 Spits out .txt and .csv files of all the necessary data. 
 
 TODO
@@ -16,7 +18,7 @@ References
 
 Written by Dylan James Mc Kaige
 Created: 16/5/2025
-Updated: 2/7/2025
+Updated: 22/7/2025
 """
 import os, json, datatree
 import numpy as np
@@ -181,13 +183,14 @@ def get_psi_normal_entry(psi_spline: RectBivariateSpline, R_entry, Z_entry) -> n
     psi_normal = np.array([dpsi_dR, dpsi_dZ, 0])
     return psi_normal
 
-def get_pol_from_smits(k_vec: np.array, B_entry_vec_XYZ: np.array, launch_freq_GHz: float, E0: float):
+def get_pol_from_smits(k_vec: np.array, B_entry_vec_XYZ: np.array, B_entry_vec_RtZ, launch_freq_GHz: float, E0: float):
     """
     Get the polarization vector and values of E_perp and E_par using Smits [5]
     
     Args:
         k_vec (np.array): k vector 
         B_entry_vec_XYZ (np.array): B vector at point of entry
+        B_entry_vec_RtZ (np.array): B vector at point of entry
         launch_freq_GHz (float): Launch frequency in GHz
         E0 (float): E0 value
 
@@ -201,7 +204,7 @@ def get_pol_from_smits(k_vec: np.array, B_entry_vec_XYZ: np.array, launch_freq_G
     k_vec_hat = k_vec/np.linalg.norm(k_vec)
     B_entry_vec_XYZ_hat = B_entry_vec_XYZ/np.linalg.norm(B_entry_vec_XYZ)
     
-    # Angle between k and b
+    # Angle between k and b: Pitch angle
     theta = acos(np.dot(k_vec_hat, B_entry_vec_XYZ_hat))
     
     # c from [5]
@@ -215,13 +218,17 @@ def get_pol_from_smits(k_vec: np.array, B_entry_vec_XYZ: np.array, launch_freq_G
     rho_hat_perp = np.cross(k_vec_hat, B_entry_vec_XYZ_hat) 
 
     # To test for different pol vectors
+    #theta_rho = #np.array([20.993602163927417])*pi/180
     theta_rho = np.arange(start = -pi/2, stop = pi/2, step = pi/18) # 10 deg increments
 
     rho_hat_rotated = rotate_rodrigues(rho_hat_perp, k_vec_hat, theta_rho)
-
+    print(rho_hat_rotated)
     mod_E_rho = np.sqrt(E0**2 / (1 + np.tan(gamma)**2))# rho_hat_kb
     mod_E_eta = np.sqrt(E0**2 - mod_E_rho**2) # eta_hat_kb
     
+    # Check if rho perp k and perp b
+    print("rho dot k: ", np.dot(rho_hat_rotated,k_vec_hat))
+    print("rho dot b: ", np.dot(rho_hat_rotated,B_entry_vec_XYZ_hat))
     
     #Kx = (2j*cos(theta)) / (C*sin(theta)**2 + sqrt(C**2 * sin(theta)**4 + 4*cos(theta)**2))
     #Ko = (2j*cos(theta)) / (C*sin(theta)**2 - sqrt(C**2 * sin(theta)**4 + 4*cos(theta)**2))
@@ -232,22 +239,22 @@ def get_pol_from_smits(k_vec: np.array, B_entry_vec_XYZ: np.array, launch_freq_G
     #print(mod_E_eta)
     #print(mod_E_rho)
     
-    """
-    # I'm deprecating this cus I think it's bs. Keep as RHC (thetarho = 0, thetatea = -90)
+    # Keep as RHC (thetarho = 0, thetatea = -90)
     # Polairzation tilt from [5]
-    # I think Smits is FULL OF FUCKING SHIT and it's just an arbitrary angle between xtzt plane and E par (E eta) which is NOT THE POL TILT WTFFF
-    B_smits = np.dot(B_entry_vec_XYZ, yt_smits_hat)*yt_smits_hat + np.dot(B_entry_vec_XYZ, zt_smits_hat)*zt_smits_hat#B_entry_vec_XYZ_hat - (np.dot(B_entry_vec_XYZ_hat, xt_smits_hat))*xt_smits_hat
-    B_smits_hat = B_smits/np.linalg.norm(B_smits)
-    sign = np.sign(np.dot(B_smits, yt_smits_hat))
-
-    # Angle between B and Z (or B and t if in that coordinate system), positive if pointing
-    eps = acos(np.dot(B_smits_hat, zt_smits_hat)/ (np.linalg.norm(B_smits_hat)*(np.linalg.norm(zt_smits_hat))) )
     
-    # Smits polarization tilt, theta is pi/2 here because of how B is defined
-    phi = acos(cos(eps)/sin(pi/2))
-    print(phi*180/pi)
-    print(phi)
-    """
+    # Get Bp, Bt at entry
+    B_t_entry = B_entry_vec_RtZ[1]
+    B_p_entry = sqrt(B_entry_vec_RtZ[0]**2 + B_entry_vec_RtZ[2]**2)
+    pitch_angle_entry = atan(B_p_entry/B_t_entry)
+    
+    print("pitch angle at entry:", pitch_angle_entry*180/pi)
+    print("kb angle at entry: ", theta*180/pi)
+    
+    # Smits polarization tilt
+    phi = acos(cos(pitch_angle_entry)/sin(theta))
+    # Hypothesized ideal pol angle
+    print((phi+pitch_angle_entry)*180/pi)
+    #"""
 
     return rho_hat_perp, mod_E_rho, mod_E_eta, np.column_stack((theta_rho*180/pi, rho_hat_rotated))
 
@@ -302,7 +309,7 @@ def process_scotty_input_data(
     with open(topfile_path, 'r') as file:
         topfile_data = json.load(file)
     topfile_arrays = {key: np.array(value) for key, value in topfile_data.items()}
-
+    
     R = np.asarray(topfile_arrays['R'])
     Z = np.asarray(topfile_arrays['Z'])
     Br = np.asarray(topfile_arrays['Br'])
@@ -314,7 +321,7 @@ def process_scotty_input_data(
     pol_flux_spline = RectBivariateSpline(R, Z, pol_flux_RZ.T)
     pol_flux_vals = pol_flux_spline.ev(R_grid, Z_grid)
 
-    ne_vals_total = ne_spline(pol_flux_vals)
+    ne_vals_total = ne_spline(pol_flux_vals)*1e19
 
     # Save only the necessary range for ERMES
     R_range = np.linspace(ERMES_R[0], ERMES_R[1], num_RZ)
@@ -369,7 +376,7 @@ def process_scotty_input_data(
         Bz_spline.ev(entry_point[0], entry_point[1])
         ]
     )
- 
+    
     RZ_ERMES = np.column_stack((R_range, Z_range))
 
     if save:
@@ -421,7 +428,7 @@ def process_scotty_input_data(
         ax.set_aspect('equal')
         plt.show()
         
-    return entry_point, B_entry_vec_RtZ
+    return entry_point, B_entry_vec_RtZ, psi_normal_at_entry
 
 def get_ERMES_parameters(
     dt: datatree.DataTree = None,
@@ -554,7 +561,7 @@ def get_ERMES_parameters(
         ERMES_Z=(yd1, yd0)
     
     # Convert Scotty input files into RZ format (& Do some sanity plots)
-    entry_point, B_entry_vec_RtZ = process_scotty_input_data(
+    entry_point, B_entry_vec_RtZ, psi_normal_at_entry = process_scotty_input_data(
         ne_path, 
         topfile_path, 
         filename = filename,
@@ -575,13 +582,13 @@ def get_ERMES_parameters(
     # linear pol vec at launch point = beam k X B field at launch point in (X,Y,Z)
     k_vec = np.array([kx_norm, ky_norm, 0])
     lin_pol_vec = np.cross(k_vec, B_entry_vec_XYZ)
-
+    
     # Elliptical pol vector from Scotty
     if dt is not None: ellip_pol_vec = get_pol_from_scotty(dt)
     else: ellip_pol_vec = np.array([0, 0, 0])
     
     # Polarization from Smits
-    rho_hat_perp, mod_E_par, mod_E_perp, rho_hat_rotated_set = get_pol_from_smits(k_vec, B_entry_vec_XYZ, launch_freq_GHz, E0)
+    rho_hat_perp, mod_E_par, mod_E_perp, rho_hat_rotated_set = get_pol_from_smits(k_vec, B_entry_vec_XYZ, B_entry_vec_RtZ, launch_freq_GHz, E0)
 
     # Arrays for saving
     # Surely there is a neater way of doing this, but I'm lazy and want to get this working first before making it pretty
@@ -713,19 +720,47 @@ def get_ERMES_parameters(
         plt.gca().set_aspect('equal')
         plt.show()
 
+def calc_Eb_from_scotty(dt: datatree):
+    """
+    Calcualte the probe beam Electric Field amplitude along the central ray using Eqn 33 of [4]
+    Returns Eb(R, zeta, Z) where the coordinates (R, zeta, Z) are determined by tau
+
+    Args:
+        dt (datatree): Scotty output file
+        
+    Returns:
+        Eb_R_zeta_Z (array): |Eb| at all the points along the ray (from tau) in terms of (R,zeta,Z) coordinates
+    """
+    tau_R=dt.analysis.q_R.values
+    tau_Z=dt.analysis.q_Z.values
+    tau_zeta=dt.analysis.q_zeta.values
+    iPsi_xx=np.imag(dt.analysis.Psi_xx.values)
+    iPsi_xy=np.imag(dt.analysis.Psi_xy.values)
+    iPsi_yy=np.imag(dt.analysis.Psi_yy.values)
+    det_im_Psi_w=iPsi_xx*iPsi_yy-iPsi_xy**2
+    det_im_Psi_w_ant=det_im_Psi_w[0]
+    
+    g_mag=dt.analysis.g_magnitude.values
+    g_mag_ant=dt.analysis.g_magnitude.values[0]
+    
+    Eb_tau=233.4298855995723*(det_im_Psi_w/det_im_Psi_w_ant)**(1/4) * (g_mag_ant/g_mag)**(1/2)
+    print(np.max(Eb_tau))
+    Eb_R_zeta_Z = np.column_stack([Eb_tau, tau_R, tau_zeta, tau_Z])
+    print(Eb_R_zeta_Z)
+
 if __name__ == '__main__':
     # Maybe I could run scotty here as well so it is instantaenous lol
-    #"""
+    """
     get_ERMES_parameters(
-        dt=load_scotty_data('\\MAST-U\\scotty_output_freq32.5_pol-15.0_rev.h5'),
+        dt=load_scotty_data('\\MAST-U\\scotty_output_freq40.0_pol-13.0_rev.h5'),
         suffix="MAST-U_",
-        launch_angle=15.0, 
-        launch_freq_GHz=32.5, 
+        launch_angle=13.0, 
+        launch_freq_GHz=40, 
         port_width=0.01, 
         #launch_positon=[2.278,0,-0.01], 
         #launch_beam_curvature=-0.7497156475519201, 
         #launch_beam_width=0.07596928872724663, 
-        dist_to_ERMES_port=0.9, 
+        dist_to_ERMES_port=0.85, 
         domain_size=0.45, 
         ne_path = '\\MAST-U\\ne_45290_150ms.dat', 
         topfile_path = '\\MAST-U\\topfile_45290_150ms.json',
@@ -738,21 +773,21 @@ if __name__ == '__main__':
     #DIII-D
     """
     get_ERMES_parameters(
-        dt=load_scotty_data('\\Output\\scotty_output_freq72.5_pol-3.0_rev.h5'),
+        dt=load_scotty_data('\\Output\\scotty_output_freq72.5_pol-15.0_rev.h5'),
         suffix="DIII-D_",
-        launch_angle=-15.0, 
-        launch_freq_GHz=40, 
+        launch_angle=15.0, 
+        launch_freq_GHz=72.5, 
         port_width=0.01, 
-        #launch_positon=[2.278,0,-0.01], 
-        launch_beam_curvature=-0.95, 
-        launch_beam_width=0.125, 
+        #launch_positon=[3.01346,0,-0.09017],
+        #launch_beam_curvature=-0.95, 
+        #launch_beam_width=0.125, 
         dist_to_ERMES_port=0.55, 
         domain_size=0.45, 
         ne_path = '\\source_data\\ne_189998_3000ms_quinn.dat', 
         topfile_path = '\\source_data\\topfile_189998_3000ms_quinn.json',
         num_RZ = 25,
-        plot=True,
-        save=True,
+        plot=False,
+        save=False,
         )
     
     #"""
@@ -763,4 +798,13 @@ if __name__ == '__main__':
     Compare w/ Scotty & analytical
     
     Interestingly, Scotty crashes for launch_angle = 9 deg on the DIII-D data , so I ran at 8.995 deg since 8.996 deg will crash. 
+    
+    Since everything else is independant of launch freq, we dont need to regen that. Only the scotty BT graphs if we want to compare. 
+    Use freq sweep in ERMES to run multiple freqs
+    
+    nevermind, I cannot use sweep. Doesnt do what I want. Do it manually....
+    
     """
+    
+    # Test E field calc
+    calc_Eb_from_scotty(dt=load_scotty_data('\\Output\\scotty_output_freq72.5_pol-15.0_rev.h5'))
