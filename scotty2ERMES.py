@@ -7,7 +7,7 @@ The shape of the domain here is specifically for DBS simulations.
 Spits out .txt and .csv files of all the necessary data. 
 
 TODO
-1. Tidy up saving?
+1. Tidy up saving -> change it to df so it is easy to use AND also save df to txt file!
 
 References
     [1] Two dimensional full-wave simulations of Doppler back-scattering in tokamak plasmas with COMSOL by Quinn Pratt et al (in-progress paper)
@@ -23,10 +23,13 @@ Updated: 24/7/2025
 import os, json, datatree
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 from math import sin, cos, tan, acos, atan, atan2, sqrt, fabs
 from scipy.constants import c, pi, m_e, m_p, elementary_charge, epsilon_0
-from scipy.interpolate import RectBivariateSpline, UnivariateSpline
+from scipy.interpolate import RectBivariateSpline, UnivariateSpline, griddata
+from scipy.integrate import cumulative_trapezoid
 from matplotlib import pyplot as plt
+from scotty.analysis import beam_width
 
 def RtZ_to_XYZ(a: np.array) -> np.array:
     """
@@ -75,7 +78,7 @@ def find_lcfs_entry_point(
     ):
     """    
     Finds the point of entry along the Last Closed Flux Surface for calculation of polarization vector (Linear).
-    Only used if no Scotty output file is provided
+    Only used if no Scotty output file is provided (so generally you wouldnt be using this)
 
     Args:
         pol_flux_spline (RectBivariateSpline): Poloidal flux spline
@@ -90,6 +93,7 @@ def find_lcfs_entry_point(
         R_entry (float): R of point of entry
         Z_entry (float): Z of point of entry
     """
+    print("Why are you using this? Get a Scotty output file, it'll make your life easier.")
     s_vals = np.arange(0, max_dist, step)
     R_vals = R0 - s_vals * cos(-launch_angle_rad)
     Z_vals = Z0 - s_vals * sin(-launch_angle_rad)
@@ -720,51 +724,351 @@ def get_ERMES_parameters(
         plt.gca().set_aspect('equal')
         plt.show()
 
-def calc_Eb_from_scotty(dt: datatree):
+def calc_Eb_from_scotty(dt: datatree, E0: float = 1.0, wx: float = 0.0, wy: float = 0.0):
     """
     Calcualte the probe beam Electric Field amplitude along the central ray using Eqn 33 of [4]
     Returns Eb(R, zeta, Z) where the coordinates (R, zeta, Z) are determined by tau
 
     Args:
         dt (datatree): Scotty output file
+        E0 (float): For scaling
+        wx (float): width in xhat direction
+        wy (float): width in yhat direciton
         
     Returns:
-        Eb_R_zeta_Z (array): |Eb| at all the points along the ray (from tau) in terms of (R,zeta,Z) coordinates
+        Eb_tau (array): |Eb| at all the points along the ray w.r.t tau
     """
-    tau_R=dt.analysis.q_R.values
-    tau_Z=dt.analysis.q_Z.values
-    tau_zeta=dt.analysis.q_zeta.values
-    iPsi_xx=np.imag(dt.analysis.Psi_xx.values)
-    iPsi_xy=np.imag(dt.analysis.Psi_xy.values)
-    iPsi_yy=np.imag(dt.analysis.Psi_yy.values)
-    det_im_Psi_w=iPsi_xx*iPsi_yy-iPsi_xy**2
-    det_im_Psi_w_ant=det_im_Psi_w[0]
+    # Naming convention, end in tau means index in terms of tau, RtZ means in RtZ basis, xyg means in xyg basis, neither means it is an element (likely), 
+    # w means in plane perp to g, g means projected onto g
+    # i means im component, launch and ant are equiv
+    tau_len = dt.inputs.len_tau.values
+    tau_values = dt.analysis.tau.values
     
-    g_mag=dt.analysis.g_magnitude.values
-    g_mag_ant=dt.analysis.g_magnitude.values[0]
+    x_hat_RtZ_tau = dt.analysis.x_hat.values
+    y_hat_RtZ_tau = dt.analysis.y_hat.values
+    g_hat_RtZ_tau = dt.analysis.g_hat.values
+    g_mag_tau = dt.analysis.g_magnitude.values
     
-    Eb_tau=233.4298855995723*(det_im_Psi_w/det_im_Psi_w_ant)**(1/4) * (g_mag_ant/g_mag)**(1/2)
-    print(np.max(Eb_tau))
-    Eb_R_zeta_Z = np.column_stack([Eb_tau, tau_R, tau_zeta, tau_Z])
-    print(Eb_R_zeta_Z)
+    R_tau=dt.analysis.q_R.values
+    Z_tau=dt.analysis.q_Z.values
+    zeta_tau=dt.analysis.q_zeta.values
+    beam_trajectiry_RtZ_tau = dt.analysis.beam.values # Vector made of the prev 3
+    
+    Psi_xx_tau = dt.analysis.Psi_xx.values
+    Psi_xy_tau = dt.analysis.Psi_xy.values
+    Psi_yy_tau = dt.analysis.Psi_yy.values
+    iPsi_xx_tau=np.imag(Psi_xx_tau)
+    iPsi_xy_tau=np.imag(Psi_xy_tau)
+    iPsi_yy_tau=np.imag(Psi_yy_tau)
+    
+    # Rotation/Projection matrices, requires the input to be in RtZ basis
+    P_RtZ_to_xyg = np.stack([x_hat_RtZ_tau, y_hat_RtZ_tau, g_hat_RtZ_tau], axis = 1)
+    
+    def vec_RtZ_to_xyg_tau(vec):
+        """
+        Transform a vector in RtZ basis to xyg basis
 
-def ERMES_results_to_readable():
-    """
-    Placeholder while I figure out how to do
+        Args:
+            vec (array): The vector to transform
+            
+        Returns:
+            vec (array): The transformed vector
+        """
+        return np.einsum('nij,nj->ni', P_RtZ_to_xyg, vec)
     
-    Basically it will be
-    1) get XYZ coord of each mesh node
-    2) get mod E at each mesh node
-    3) map mod E at mech node to XYZ of mesh node
-    4) get XYZ of central ray
-    5) Trace mod E along central ray
-    6) Profit????
-    
-    This SHOULD letme easily comapre modE in ERMES and Scotty and to any theoretical ideal scenarios that have exact solutions (liek linear layer, etc)
-    """
+    def mat_RtZ_to_xyg_tau(mat, index = 0):
+        """
+        Project a matrix in RtZ basis to xyg basis
 
+        Args:
+            mat (array): The vector to transform
+            
+        Returns:
+            mat (array): The transformed vector
+        """
+        if np.ndim(mat) == 2:
+            return np.einsum('ij,jk,lk->il', P_RtZ_to_xyg[index], mat, P_RtZ_to_xyg[index])
+        else:
+            return np.einsum('nij,njk,nlk->nil', P_RtZ_to_xyg, mat, P_RtZ_to_xyg)
+    
+    def mat_to_plane_perp_to_g_tau(mat, ghat):
+        """
+        Project a matrix to the plane perp to g either over tau or a single tau
+
+        Args:
+            mat (array): The vector to transform
+            
+        Returns:
+            M_proj (array): The transformed vector
+        """
+        I = np.eye(3)
+        if np.ndim(ghat) == 1: 
+            P = I - np.einsum('i,j->ij', ghat, ghat)
+            M_proj = np.einsum('ij,jk,lk->il', P, mat, P)
+        else: 
+            P = I - np.einsum('ni,nj->nij', ghat, ghat)
+            M_proj = np.einsum('nij,njk,nlk->nil', P, mat, P)
+        return M_proj
+    
+    # Create Psi_w from Psi_xx,xy,yy. Alternatively, project Psi_3D onto w. TODO Check if these are equal
+    Psi_w_xyg_tau = np.zeros((tau_len, 3, 3), dtype=np.complex64) # Such that Psi_w_xyg_tau(N) is the Nth Psi_w corresponding to the Nth tau in xyg basis
+    Psi_w_xyg_tau[:, 0, 0] = Psi_xx_tau
+    Psi_w_xyg_tau[:, 0, 1] = Psi_xy_tau
+    Psi_w_xyg_tau[:, 1, 0] = Psi_xy_tau
+    Psi_w_xyg_tau[:, 1, 1] = Psi_yy_tau
+    
+    Psi_3D_ant_RtZ = dt.analysis.Psi_3D_lab_launch
+    g_hat_ant_RtZ = g_hat_RtZ_tau[0]
+    Psi_w_ant_RtZ = mat_to_plane_perp_to_g_tau(Psi_3D_ant_RtZ, g_hat_ant_RtZ)
+    Psi_w_ant_xyg = mat_RtZ_to_xyg_tau(Psi_w_ant_RtZ)
+    
+    # Get w. w = w_x xhat + w_y y_hat in (wx,wy,0) xhat, yhat, ghat
+    kappa_dot_xhat = dt.analysis.kappa_dot_xhat.values
+    kappa_dot_yhat = dt.analysis.kappa_dot_yhat.values
+    d_xhat_d_tau_dot_yhat = dt.analysis.d_xhat_d_tau_dot_yhat.values
+    
+    wx_0 = wx
+    wy_0 = wy
+    wx_tau = np.zeros((tau_len,))
+    wy_tau = np.zeros((tau_len,))
+    wx_ghat_factor_tau = ( wy_tau/(g_mag_tau*(1 - (wx_tau*kappa_dot_xhat + wy_tau*kappa_dot_yhat))) ) * (d_xhat_d_tau_dot_yhat)
+    wy_ghat_factor_tau = ( wx_tau/(g_mag_tau*(1 - (wx_tau*kappa_dot_xhat + wy_tau*kappa_dot_yhat))) ) * (d_xhat_d_tau_dot_yhat)
+    grad_wx_tau = x_hat_RtZ_tau + g_hat_RtZ_tau * wx_ghat_factor_tau[:, np.newaxis] # Eqn D.3
+    grad_wy_tau = y_hat_RtZ_tau - g_hat_RtZ_tau * wy_ghat_factor_tau[:, np.newaxis] # Eqn D.4
+    d_r_d_tau = np.gradient(beam_trajectiry_RtZ_tau, tau_values, axis = 0)
+    grad_wx_dot_d_r_d_tau = np.einsum('ij,ij->i', grad_wx_tau, d_r_d_tau)
+    grad_wy_dot_d_r_d_tau = np.einsum('ij,ij->i', grad_wy_tau, d_r_d_tau)
+    
+    wx_tau = wx_0 + cumulative_trapezoid(grad_wx_dot_d_r_d_tau, tau_values, initial = 0.0)
+    wy_tau = wy_0 + cumulative_trapezoid(grad_wy_dot_d_r_d_tau, tau_values, initial = 0.0)
+    
+    w_xyg_tau = np.array([wx_tau, wy_tau, np.zeros(tau_len)]).T
+    w_ant_xyg = w_xyg_tau[0]
+    
+    # 4th root piece (det_piece)
+    det_im_Psi_w = iPsi_xx_tau*iPsi_yy_tau-iPsi_xy_tau**2 # Eqn A.67 from [4]
+    det_im_Psi_w_ant = np.imag(Psi_w_ant_xyg[0,0])*np.imag(Psi_w_ant_xyg[1,1])-np.imag(Psi_w_ant_xyg[0,1])*np.imag(Psi_w_ant_xyg[1,0]) # Eqn A.67 from [4]
+    det_piece = np.abs( (det_im_Psi_w/det_im_Psi_w_ant)**0.25 )
+    
+    # g_piece
+    g_mag_ant = 2*3.0e8/(2*pi*dt.inputs.launch_freq_GHz.values*1e9) # Eqn 195
+    g_piece = np.abs ((g_mag_ant/g_mag_tau)**0.5 )
+    
+    # wPsiw pieces
+    def quad_form(vec, mat):
+        """
+        Calcualte the quadratic form vec dot mat dot vec
+
+        Args:
+            vec (array): Nx1 vec
+            mat (array): NxN mat
+            
+        Returns:
+            Scalar or list of Scalars of len N
+        """
+        if np.ndim(vec) == 1:
+            return np.dot(vec, np.dot(mat, vec))
+        else:
+            return np.einsum('ni,nij,nj->n', vec, mat, vec)
+    
+    w_dot_Psi_w_ant_dot_w_piece = np.abs(np.exp( 1j/2 * quad_form(w_ant_xyg, Psi_w_ant_xyg) ))
+    w_dot_Psi_w_dot_w_piece = np.abs(np.exp( 1j/2 * quad_form(w_xyg_tau, Psi_w_xyg_tau) ))
+    
+    # A_ant piece, dedfined based off of E0
+    A_ant = 60# E0 / (w_dot_Psi_w_ant_dot_w_piece)
+
+    #print(A_ant*w_dot_Psi_w_dot_w_piece)
+    
+    # Finally, calculate |E_b|
+    Eb_tau = A_ant*det_piece*g_piece#*w_dot_Psi_w_dot_w_piece
+    
+    return Eb_tau
+
+def ERMES_results_to_readable(res: str = None, msh: str = None, dt: datatree = None, plot: bool = False, compare: bool = False, E0: float = 1.0):
+    """
+    Plot ERMES modE in R,Z with Scotty overlaid, Plot ERMES modE along central ray with Scotty modE calculations..
+    
+    Args:
+        res (str): path to the .res file
+        msh (str): path to the .msh file
+        dt (datatree): Scotty output file
+        plot (bool): Plot it!
+        compare (bool): Compare with theoretical calulations
+    """
+    print("Reading ERMES msh and res files")
+    # Node ID as XYZ coords
+    with open(os.getcwd() + msh, 'r') as f:
+        lines = f.readlines()
+
+    coords = {}
+    reading = False
+
+    for line in lines:
+        line = line.strip()
+        if line.startswith("Coordinates"):
+            reading = True
+            continue
+        if line.startswith("End Coordinates"):
+            break
+        if reading:
+            parts = line.split()
+            if len(parts) == 4:
+                node_id = int(parts[0])
+                x, y, z = map(float, parts[1:])
+                coords[node_id] = [x, y, z]
+
+    # Determine max node ID to allocate array correctly
+    max_node_id = max(coords.keys())
+    node_to_xyz = np.zeros((max_node_id + 1, 3))  # + 1 to allow indexing by node ID, note that this creates a 0,0,0 node 0
+
+    for node_id, xyz in coords.items():
+        node_to_xyz[node_id] = xyz
+        
+    # modE as nodeID
+    with open(os.getcwd() + res, 'r') as f:
+        lines = f.readlines()
+
+    modE = {}
+    reading = False
+    inside_block = False
+
+    for line in lines:
+        line = line.strip()
+        
+        # Start of the correct block
+        if line.startswith('Result "mod(E)"'):
+            inside_block = True
+            continue
+
+        # Inside correct block, look for Values
+        if inside_block and line.startswith("Values"):
+            reading = True
+            continue
+
+        # End reading values
+        if reading and line.startswith("End Values"):
+            break
+
+        # Read values line
+        if reading:
+            parts = line.split()
+            if len(parts) == 2:
+                node_id = int(parts[0])
+                value = float(parts[1])
+                modE[node_id] = value
+
+    # Convert to array
+    max_node = max(modE.keys())
+    modE_array = np.zeros(max_node + 1)
+    for nid, val in modE.items():
+        modE_array[nid] = val
+        
+    common_nodes = min(node_to_xyz.shape[0], modE_array.shape[0])
+    modE_xyz = np.hstack((node_to_xyz[:common_nodes], modE_array[:common_nodes].reshape(-1, 1)))
+    
+    beam_RZ = np.column_stack([dt.analysis.q_R.values,dt.analysis.q_Z.values])
+
+    # Extract modE along central ray within some arbitrary tolerance
+    tol = 4e-4 # Half of mesh size
+    modE_list = []
+    data_xy = modE_xyz[1:, :2]
+    modE_vals = modE_xyz[1:, 3]
+    
+    # to get only modE along the cetnral ray
+    for xq, yq in beam_RZ:
+        dx = np.abs(data_xy[:, 0] - xq)
+        dy = np.abs(data_xy[:, 1] - yq)
+        mask = (dx <= tol) & (dy <= tol)
+
+        if np.any(mask):
+            modE_list.append(modE_vals[mask][0]) # First match
+        else:
+            modE_list.append(0)
+    
+    tau_vals = np.arange(len(beam_RZ))
+    if plot:
+        print("Plotting modE in R,Z from ERMES and Scotty")
+        # Plot modE over R Z
+        # Filter points near desired z-slice, arrays start from 1 cus first node in 0,0. Don't ask me why, ERMES things.
+        mask = np.where(np.abs(modE_xyz[1:, 2]) < 4e-4)
+        filtered = modE_xyz[mask]
+
+        # Get the filtered values (only the level set of z = 0.0)
+        x = filtered[1:, 0]
+        y = filtered[1:, 1]
+        modE = filtered[1:, 3]
+
+        # Create grid
+        grid_res = int((np.max(data_xy[1:, 0]) - np.min(data_xy[1:, 0]))/(8e-4))
+        xi = np.linspace(np.min(x), np.max(x), grid_res)
+        yi = np.linspace(np.min(y), np.max(y), grid_res)
+        X, Y = np.meshgrid(xi, yi)
+
+        # Interpolate modE onto grid
+        Z = griddata((x, y), modE, (X, Y), method='cubic', fill_value=np.nan) # nan so it is white
+
+        # Plot
+        plt.figure(figsize=(6, 5))
+        c = plt.pcolormesh(X, Y, Z, shading='auto', cmap='viridis')
+        plt.xlabel("R")
+        plt.ylabel("Z")
+        plt.title(f"modE ERMES & Scotty")
+        plt.colorbar(c, label='modE')
+        
+        # Plot Scotty results
+        width = beam_width(dt.analysis.g_hat, np.array([0.0, 1.0, 0.0]), dt.analysis.Psi_3D)
+        beam = dt.analysis.beam
+        beam_plus = beam + width
+        beam_minus = beam - width
+        
+        plt.plot(beam_plus.sel(col="R"), beam_plus.sel(col="Z"), "--k")
+        plt.plot(beam_minus.sel(col="R"), beam_minus.sel(col="Z"), "--k", label="Beam width")
+        plt.plot(beam.sel(col="R"), beam.sel(col="Z"), "-", c='black')
+        
+        plt.xlim(np.min(x), np.max(x))
+        plt.ylim(np.min(y), np.max(y))
+        plt.tight_layout()
+        plt.gca().set_aspect('equal')
+        plt.show()
+        
+        print("Plotting modE vs tau from ERMES and Scotty")
+        # Plot modE vs tau
+        modE_list_normalized = modE_list/np.max(modE_list)
+        plt.scatter(tau_vals, modE_list_normalized, marker='.', color = 'red')
+        if compare: 
+            theoretical_modE_tau = calc_Eb_from_scotty(dt=dt, E0=E0, wx=dt.inputs.launch_beam_width.values, wy=dt.inputs.launch_beam_width.values)
+            theoretical_modE_tau_normalized = theoretical_modE_tau/np.max(theoretical_modE_tau)
+            plt.scatter(tau_vals, theoretical_modE_tau_normalized, marker='.', color = 'orange')
+        
+        ratio = modE_list/theoretical_modE_tau
+        np.set_printoptions(threshold=np.inf)
+        #print(ratio)
+        
+        plt.xlabel(r"$\tau$ beam parameter")
+        plt.ylabel("mod(E), normalized (A.U.)")
+        plt.title(r"mod(E) vs Beam Position $\tau$")
+        plt.tight_layout()
+        plt.show()
+    
+def plot_scotty_zoomed(dt: datatree = None, ERMES_params_path: str = None, ERMES_results_path: str = None):
+    """
+    Generate zoomed in plots of Scotty over ERMES
+
+    Args:
+        dt (datatree): Scotty output file 
+        ERMES_params_path (str): path to ERMES_params.txt
+        ERMES_results_path (str): Path to ERMES results image
+    """
+    
+    
+    #x_domain = 
+    
+    # Plot the beam centre + width
+    
+    
 if __name__ == '__main__':
     # Maybe I could run scotty here as well so it is instantaenous lol
+    # MAST-U
     """
     get_ERMES_parameters(
         dt=load_scotty_data('\\MAST-U\\scotty_output_freq40.0_pol-13.0_rev.h5'),
@@ -820,6 +1124,12 @@ if __name__ == '__main__':
     nevermind, I cannot use sweep. Doesnt do what I want. Do it manually....
     
     """
-    
-    # Test E field calc
-    calc_Eb_from_scotty(dt=load_scotty_data('\\Output\\scotty_output_freq72.5_pol-15.0_rev.h5'))
+    # Text ERMES output to something readable
+    ERMES_results_to_readable(
+        res="\\ERMES_output_files\\DIII-D_13_degree_72_5.post.res", 
+        msh="\\ERMES_output_files\\DIII-D_13_degree_72_5.post.msh",
+        dt=load_scotty_data('\\Output\\scotty_output_freq72.5_pol-13.0_rev.h5'),
+        plot=True,
+        compare=True,
+        E0 = 233,
+    )
