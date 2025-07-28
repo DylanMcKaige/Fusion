@@ -6,6 +6,8 @@ The shape of the domain here is specifically for DBS simulations.
 
 Spits out .txt and .csv files of all the necessary data. 
 
+ALL PATHS ARE w.r.t CWD
+
 TODO
 1. Tidy up saving -> change it to df so it is easy to use AND also save df to txt file!
 
@@ -30,10 +32,24 @@ from scipy.interpolate import RectBivariateSpline, UnivariateSpline, griddata
 from scipy.integrate import cumulative_trapezoid
 from matplotlib import pyplot as plt
 from scotty.analysis import beam_width
+from scotty.plotting import plot_poloidal_crosssection
+
+def handle_scotty_launch_angle_sign(dt: datatree):
+    """
+    Because I'm getting pissed off at the sign conventions.
+
+    Args:
+        dt (datatree): Scotty output file
+    """
+    
+    if abs(dt.inputs.poloidal_launch_angle_Torbeam.values) < 180:
+        return abs(dt.inputs.poloidal_launch_angle_Torbeam.values)
+    else:
+        return (abs(dt.inputs.poloidal_launch_angle_Torbeam.values)-360)
 
 def RtZ_to_XYZ(a: np.array) -> np.array:
     """
-    Convert an array in (R,t,Z) to (X,Y,Z) for ERMES, keeping the right handed coordinate system.
+    Convert an array in (R,t,Z) to TRUE CARTESIAN (X,Y,Z) for ERMES, keeping the right handed coordinate system.
     
     This function is for consistency because I keep messing this up.
     
@@ -823,6 +839,8 @@ def calc_Eb_from_scotty(dt: datatree, E0: float = 1.0, wx: float = 0.0, wy: floa
     Psi_w_ant_xyg = mat_RtZ_to_xyg_tau(Psi_w_ant_RtZ)
     
     # Get w. w = w_x xhat + w_y y_hat in (wx,wy,0) xhat, yhat, ghat
+    """
+    # To be deprecated since along central ray, w = 0
     kappa_dot_xhat = dt.analysis.kappa_dot_xhat.values
     kappa_dot_yhat = dt.analysis.kappa_dot_yhat.values
     d_xhat_d_tau_dot_yhat = dt.analysis.d_xhat_d_tau_dot_yhat.values
@@ -845,18 +863,8 @@ def calc_Eb_from_scotty(dt: datatree, E0: float = 1.0, wx: float = 0.0, wy: floa
     w_xyg_tau = np.array([wx_tau, wy_tau, np.zeros(tau_len)]).T
     w_ant_xyg = w_xyg_tau[0]
     
-    # 4th root piece (det_piece)
-    det_im_Psi_w = iPsi_xx_tau*iPsi_yy_tau-iPsi_xy_tau**2 # Eqn A.67 from [4]
-    det_im_Psi_w_ant = np.imag(Psi_w_ant_xyg[0,0])*np.imag(Psi_w_ant_xyg[1,1])-np.imag(Psi_w_ant_xyg[0,1])*np.imag(Psi_w_ant_xyg[1,0]) # Eqn A.67 from [4]
-    det_piece = np.abs( (det_im_Psi_w/det_im_Psi_w_ant)**0.25 )
-    
-    # g_piece
-    g_mag_ant = 2*3.0e8/(2*pi*dt.inputs.launch_freq_GHz.values*1e9) # Eqn 195
-    g_piece = np.abs ((g_mag_ant/g_mag_tau)**0.5 )
-    
     # wPsiw pieces
     def quad_form(vec, mat):
-        """
         Calcualte the quadratic form vec dot mat dot vec
 
         Args:
@@ -865,7 +873,7 @@ def calc_Eb_from_scotty(dt: datatree, E0: float = 1.0, wx: float = 0.0, wy: floa
             
         Returns:
             Scalar or list of Scalars of len N
-        """
+        
         if np.ndim(vec) == 1:
             return np.dot(vec, np.dot(mat, vec))
         else:
@@ -874,8 +882,21 @@ def calc_Eb_from_scotty(dt: datatree, E0: float = 1.0, wx: float = 0.0, wy: floa
     w_dot_Psi_w_ant_dot_w_piece = np.abs(np.exp( 1j/2 * quad_form(w_ant_xyg, Psi_w_ant_xyg) ))
     w_dot_Psi_w_dot_w_piece = np.abs(np.exp( 1j/2 * quad_form(w_xyg_tau, Psi_w_xyg_tau) ))
     
-    # A_ant piece, dedfined based off of E0
-    A_ant = 60# E0 / (w_dot_Psi_w_ant_dot_w_piece)
+    """
+    
+    # 4th root piece (det_piece)
+    det_im_Psi_w = iPsi_xx_tau*iPsi_yy_tau-iPsi_xy_tau**2 # Eqn A.67 from [4]
+    det_im_Psi_w_ant = np.imag(Psi_w_ant_xyg[0,0])*np.imag(Psi_w_ant_xyg[1,1])-np.imag(Psi_w_ant_xyg[0,1])*np.imag(Psi_w_ant_xyg[1,0]) # Eqn A.67 from [4]
+    det_piece = (det_im_Psi_w/det_im_Psi_w_ant)**0.25
+    
+    # g_piece
+    g_mag_ant = 2*3.0e8/(2*pi*dt.inputs.launch_freq_GHz.values*1e9) # Eqn 195
+    g_piece = (g_mag_ant/g_mag_tau)**0.5
+    
+    
+    
+    # A_ant piece, defined based off of E0
+    A_ant = E0
 
     #print(A_ant*w_dot_Psi_w_dot_w_piece)
     
@@ -1012,8 +1033,14 @@ def ERMES_results_to_readable(res: str = None, msh: str = None, dt: datatree = N
         c = plt.pcolormesh(X, Y, Z, shading='auto', cmap='viridis')
         plt.xlabel("R")
         plt.ylabel("Z")
-        plt.title(f"modE ERMES & Scotty")
+        plt.title(r"Results for ERMES & Scotty, $\theta_{launch}$="
+                  + f"{handle_scotty_launch_angle_sign(dt=dt)}" 
+                  + r"$^\circ$" 
+                  + f",f={dt.inputs.launch_freq_GHz.values}GHz")
         plt.colorbar(c, label='modE')
+        
+        # Plot flux surfaces to 'visualize' the plasma
+        plot_poloidal_crosssection(dt=dt, ax=plt.gca(), highlight_LCFS=False)
         
         # Plot Scotty results
         width = beam_width(dt.analysis.g_hat, np.array([0.0, 1.0, 0.0]), dt.analysis.Psi_3D)
@@ -1027,18 +1054,18 @@ def ERMES_results_to_readable(res: str = None, msh: str = None, dt: datatree = N
         
         plt.xlim(np.min(x), np.max(x))
         plt.ylim(np.min(y), np.max(y))
-        plt.tight_layout()
         plt.gca().set_aspect('equal')
         plt.show()
         
         print("Plotting modE vs tau from ERMES and Scotty")
         # Plot modE vs tau
-        modE_list_normalized = modE_list/np.max(modE_list)
+        modE_list_normalized = modE_list#/np.max(modE_list)
         plt.scatter(tau_vals, modE_list_normalized, marker='.', color = 'red')
         if compare: 
             theoretical_modE_tau = calc_Eb_from_scotty(dt=dt, E0=E0, wx=dt.inputs.launch_beam_width.values, wy=dt.inputs.launch_beam_width.values)
-            theoretical_modE_tau_normalized = theoretical_modE_tau/np.max(theoretical_modE_tau)
-            plt.scatter(tau_vals, theoretical_modE_tau_normalized, marker='.', color = 'orange')
+            theoretical_modE_tau_normalized = theoretical_modE_tau#/np.max(theoretical_modE_tau)
+            unity_first = modE_list[0]/theoretical_modE_tau[0]
+            plt.scatter(tau_vals, theoretical_modE_tau_normalized*unity_first, marker='.', color = 'orange')
         
         ratio = modE_list/theoretical_modE_tau
         np.set_printoptions(threshold=np.inf)
@@ -1046,25 +1073,14 @@ def ERMES_results_to_readable(res: str = None, msh: str = None, dt: datatree = N
         
         plt.xlabel(r"$\tau$ beam parameter")
         plt.ylabel("mod(E), normalized (A.U.)")
-        plt.title(r"mod(E) vs Beam Position $\tau$")
+        plt.title(r"mod(E) vs Beam Position $\tau$, $\theta_{launch}$="
+                  + f"{handle_scotty_launch_angle_sign(dt=dt)}" 
+                  + r"$^\circ$" 
+                  + f",f={dt.inputs.launch_freq_GHz.values}GHz")
+        plt.xlim(0, len(tau_vals))
+        #plt.ylim(0, 1.0)
         plt.tight_layout()
         plt.show()
-    
-def plot_scotty_zoomed(dt: datatree = None, ERMES_params_path: str = None, ERMES_results_path: str = None):
-    """
-    Generate zoomed in plots of Scotty over ERMES
-
-    Args:
-        dt (datatree): Scotty output file 
-        ERMES_params_path (str): path to ERMES_params.txt
-        ERMES_results_path (str): Path to ERMES results image
-    """
-    
-    
-    #x_domain = 
-    
-    # Plot the beam centre + width
-    
     
 if __name__ == '__main__':
     # Maybe I could run scotty here as well so it is instantaenous lol
@@ -1126,10 +1142,10 @@ if __name__ == '__main__':
     """
     # Text ERMES output to something readable
     ERMES_results_to_readable(
-        res="\\ERMES_output_files\\DIII-D_13_degree_72_5.post.res", 
-        msh="\\ERMES_output_files\\DIII-D_13_degree_72_5.post.msh",
-        dt=load_scotty_data('\\Output\\scotty_output_freq72.5_pol-13.0_rev.h5'),
+        res="\\ERMES_output_files\\DIII-D_15_degree_72_5.post.res", 
+        msh="\\ERMES_output_files\\DIII-D_15_degree_72_5.post.msh",
+        dt=load_scotty_data('\\Output\\scotty_output_freq72.5_pol-15.0_rev.h5'),
         plot=True,
         compare=True,
-        E0 = 233,
+        E0 = 1#233,
     )
