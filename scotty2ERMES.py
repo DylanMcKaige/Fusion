@@ -9,7 +9,7 @@ Spits out .txt and .csv files of all the necessary data.
 ALL PATHS ARE w.r.t CWD
 
 TODO
-1. Tidy up saving -> change it to df so it is easy to use AND also save df to txt file!
+1. Tidy up saving
 
 References
     [1] Two dimensional full-wave simulations of Doppler back-scattering in tokamak plasmas with COMSOL by Quinn Pratt et al (in-progress paper)
@@ -20,7 +20,7 @@ References
 
 Written by Dylan James Mc Kaige
 Created: 16/5/2025
-Updated: 28/7/2025
+Updated: 30/7/2025
 """
 import os, json, datatree
 import numpy as np
@@ -36,7 +36,8 @@ from scotty.plotting import plot_poloidal_crosssection
 
 def handle_scotty_launch_angle_sign(dt: datatree):
     """
-    Because I'm getting pissed off at the sign conventions.
+    Because I keep messing up the sign conventions. Also returns it as an acute angle. 
+    + Above the horizontal, - Below the horizontal (pointing into the plasma from the right)
 
     Args:
         dt (datatree): Scotty output file
@@ -190,12 +191,12 @@ def get_psi_normal_entry(psi_spline: RectBivariateSpline, R_entry, Z_entry) -> n
     Get the outward normal vector to the LCFS at the point of entry
 
     Args:
-        psi_spline (RectBivariateSpline): _description_
-        R_entry (_type_): _description_
-        Z_entry (_type_): _description_
+        psi_spline (RectBivariateSpline): Psi interpolation spline
+        R_entry (float): R of entry point
+        Z_entry (float): Z of entry point
 
     Returns:
-        np.array: _description_
+        psi_normal (array): Outward normal vector at entry of LCFS
     """
     dpsi_dR = psi_spline.ev(R_entry, Z_entry, dx=1, dy = 0)
     dpsi_dZ = psi_spline.ev(R_entry, Z_entry, dx=0, dy = 1)
@@ -481,7 +482,8 @@ def get_ERMES_parameters(
         launch_beam_curvature (float): Curvature of beam at launch position, in m^{-1}
         launch_beam_width (float): Width of beam at launch position, in m
         dist_to_ERMES_port (float): Distance from launcher to port in ERMES in m, stare at Scotty to decide this
-        domain_size (float): Size of domain for ERMES in m, stare at Scotty to decide this
+        domain_size_x (float): Size of domain in  for ERMES in m, stare at Scotty to decide this
+        domain_size_y (float): Size of domain for ERMES in m, stare at Scotty to decide this
         plot (bool): Plot everything
         save (bool): Save everything
         path (str): Path to save file in, defaults to cwd
@@ -623,7 +625,6 @@ def get_ERMES_parameters(
         xd1, 
         xd0, 
         xd1, 
-        xp0,
         trimmed_xd0,
         trimmed_xd1,
         trimmed_xd3,
@@ -642,7 +643,6 @@ def get_ERMES_parameters(
         yd0, 
         yd1, 
         yd1, 
-        yp0,
         trimmed_yd0,
         trimmed_yd1,
         trimmed_yd3,
@@ -661,9 +661,8 @@ def get_ERMES_parameters(
         '(COMSOL) Domain BR    ', 
         '(COMSOL) Domain TL    ', 
         '(COMSOL) Domain TR    ', 
-        'Trimmed Domain p0    ', 
-        'Trimmed Domain d0    ',
         'Trimmed Domain d1    ',
+        'Trimmed Domain d2    ',
         'Trimmed Domain d3    ',
         'Waist Position    ',
         'Point of Entry    ',
@@ -722,7 +721,7 @@ def get_ERMES_parameters(
         'Smits polz (normalized)    ',
         'E0    ', 
         'E par (ERMES)    ',
-        'E perp (ERMES)    ',
+        'E perp (ERMES)    ',  
         ]
     )
     
@@ -890,22 +889,21 @@ def calc_Eb_from_scotty(dt: datatree, E0: float = 1.0, wx: float = 0.0, wy: floa
     det_piece = (det_im_Psi_w/det_im_Psi_w_ant)**0.25
     
     # g_piece
-    g_mag_ant = 2*3.0e8/(2*pi*dt.inputs.launch_freq_GHz.values*1e9) # Eqn 195
+    g_mag_ant = 2*c/(2*pi*dt.inputs.launch_freq_GHz.values*1e9) # Eqn 195
     g_piece = (g_mag_ant/g_mag_tau)**0.5
     
-    
-    
-    # A_ant piece, defined based off of E0
-    A_ant = E0
-
-    #print(A_ant*w_dot_Psi_w_dot_w_piece)
-    
     # Finally, calculate |E_b|
-    Eb_tau = A_ant*det_piece*g_piece#*w_dot_Psi_w_dot_w_piece
+    Eb_tau = det_piece*g_piece#*w_dot_Psi_w_dot_w_piece
+    
+    # A_ant piece, defined based off of first E in ERMES (make them equal)
+    A_ant = E0/(Eb_tau[0])
+    
+    # Normalize to equate the first point
+    Eb_tau = A_ant*Eb_tau
     
     return Eb_tau
 
-def ERMES_results_to_readable(res: str = None, msh: str = None, dt: datatree = None, plot: bool = False, compare: bool = False, E0: float = 1.0):
+def ERMES_results_to_readable(res: str = None, msh: str = None, dt: datatree = None, plot: bool = False, compare: bool = False, grid_resolution: float = 8e-4):
     """
     Plot ERMES modE in R,Z with Scotty overlaid, Plot ERMES modE along central ray with Scotty modE calculations..
     
@@ -990,7 +988,7 @@ def ERMES_results_to_readable(res: str = None, msh: str = None, dt: datatree = N
     beam_RZ = np.column_stack([dt.analysis.q_R.values,dt.analysis.q_Z.values])
 
     # Extract modE along central ray within some arbitrary tolerance
-    tol = 4e-4 # Half of mesh size
+    tol = grid_resolution/2 # Half of mesh size
     modE_list = []
     data_xy = modE_xyz[1:, :2]
     modE_vals = modE_xyz[1:, 3]
@@ -1007,11 +1005,12 @@ def ERMES_results_to_readable(res: str = None, msh: str = None, dt: datatree = N
             modE_list.append(0)
     
     tau_vals = np.arange(len(beam_RZ))
+    distance_along_beam = dt.analysis.distance_along_line.values
     if plot:
         print("Plotting modE in R,Z from ERMES and Scotty")
         # Plot modE over R Z
         # Filter points near desired z-slice, arrays start from 1 cus first node in 0,0. Don't ask me why, ERMES things.
-        mask = np.where(np.abs(modE_xyz[1:, 2]) < 4e-4)
+        mask = np.where(np.abs(modE_xyz[1:, 2]) < tol)
         filtered = modE_xyz[mask]
 
         # Get the filtered values (only the level set of z = 0.0)
@@ -1020,13 +1019,13 @@ def ERMES_results_to_readable(res: str = None, msh: str = None, dt: datatree = N
         modE = filtered[1:, 3]
 
         # Create grid
-        grid_res = int((np.max(data_xy[1:, 0]) - np.min(data_xy[1:, 0]))/(8e-4))
+        grid_res = int((np.max(data_xy[1:, 0]) - np.min(data_xy[1:, 0]))/(grid_resolution))
         xi = np.linspace(np.min(x), np.max(x), grid_res)
         yi = np.linspace(np.min(y), np.max(y), grid_res)
         X, Y = np.meshgrid(xi, yi)
 
         # Interpolate modE onto grid
-        Z = griddata((x, y), modE, (X, Y), method='cubic', fill_value=np.nan) # nan so it is white
+        Z = griddata((x, y), modE, (X, Y), method='linear', fill_value=np.nan) # nan so it is white
 
         # Plot
         plt.figure(figsize=(6, 5))
@@ -1059,26 +1058,22 @@ def ERMES_results_to_readable(res: str = None, msh: str = None, dt: datatree = N
         
         print("Plotting modE vs tau from ERMES and Scotty")
         # Plot modE vs tau
-        modE_list_normalized = modE_list#/np.max(modE_list)
-        plt.scatter(tau_vals, modE_list_normalized, marker='.', color = 'red')
+        plt.scatter(distance_along_beam, modE_list, marker='.', color = 'red')
         if compare: 
-            theoretical_modE_tau = calc_Eb_from_scotty(dt=dt, E0=E0, wx=dt.inputs.launch_beam_width.values, wy=dt.inputs.launch_beam_width.values)
-            theoretical_modE_tau_normalized = theoretical_modE_tau#/np.max(theoretical_modE_tau)
-            unity_first = modE_list[0]/theoretical_modE_tau[0]
-            plt.scatter(tau_vals, theoretical_modE_tau_normalized*unity_first, marker='.', color = 'orange')
+            theoretical_modE_tau = calc_Eb_from_scotty(dt=dt, wx=dt.inputs.launch_beam_width.values, wy=dt.inputs.launch_beam_width.values, E0 = modE_list[0])
+            plt.scatter(distance_along_beam, theoretical_modE_tau, marker='.', color = 'orange')
         
-        ratio = modE_list/theoretical_modE_tau
         np.set_printoptions(threshold=np.inf)
         #print(ratio)
         
-        plt.xlabel(r"$\tau$ beam parameter")
+        plt.xlabel("Distance along central ray (m)")
         plt.ylabel("mod(E), normalized (A.U.)")
-        plt.title(r"mod(E) vs Beam Position $\tau$, $\theta_{launch}$="
+        plt.title(r"mod(E) vs Distance along central ray, $\theta_{launch}$="
                   + f"{handle_scotty_launch_angle_sign(dt=dt)}" 
                   + r"$^\circ$" 
                   + f",f={dt.inputs.launch_freq_GHz.values}GHz")
-        plt.xlim(0, len(tau_vals))
-        #plt.ylim(0, 1.0)
+        plt.xlim(0, distance_along_beam[-1])
+        plt.ylim(bottom = 0)
         plt.tight_layout()
         plt.show()
     
@@ -1133,19 +1128,16 @@ if __name__ == '__main__':
     Compare w/ Scotty & analytical
     
     Interestingly, Scotty crashes for launch_angle = 9 deg on the DIII-D data , so I ran at 8.995 deg since 8.996 deg will crash. 
-    
-    Since everything else is independant of launch freq, we dont need to regen that. Only the scotty BT graphs if we want to compare. 
-    Use freq sweep in ERMES to run multiple freqs
-    
-    nevermind, I cannot use sweep. Doesnt do what I want. Do it manually....
-    
+   
     """
     # Text ERMES output to something readable
+    #"""
     ERMES_results_to_readable(
-        res="\\ERMES_output_files\\DIII-D_15_degree_72_5.post.res", 
-        msh="\\ERMES_output_files\\DIII-D_15_degree_72_5.post.msh",
+        res="\\ERMES_output_files\\DIII-D_15_degree_72_5_5e-4_no_damping.post.res", 
+        msh="\\ERMES_output_files\\DIII-D_15_degree_72_5_5e-4_no_damping.post.msh",
         dt=load_scotty_data('\\Output\\scotty_output_freq72.5_pol-15.0_rev.h5'),
         plot=True,
         compare=True,
-        E0 = 1#233,
+        grid_resolution=5e-4,
     )
+    #"""
