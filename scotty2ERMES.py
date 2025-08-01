@@ -30,7 +30,9 @@ from math import sin, cos, tan, acos, atan, atan2, sqrt, fabs
 from scipy.constants import c, pi, m_e, m_p, elementary_charge, epsilon_0
 from scipy.interpolate import RectBivariateSpline, UnivariateSpline, griddata
 from scipy.integrate import cumulative_trapezoid
+from scipy.spatial import cKDTree
 from matplotlib import pyplot as plt
+from matplotlib.widgets import Slider
 from scotty.analysis import beam_width
 from scotty.plotting import plot_poloidal_crosssection
 
@@ -64,7 +66,7 @@ def RtZ_to_XYZ(a: np.array) -> np.array:
         b (array): The transformed vector in (X,Y,Z) basis (ERMES Cartesian)
 
     """
-    assert len(a) == 3, "This function only supports arrays of length 3"
+    assert len(a) == 3, "This function only supports single arrays of length 3, if you do this on an array of arrays, you gotta stack it"
     
     b = np.array([a[0], a[2], -a[1]])
     return b
@@ -239,8 +241,8 @@ def get_pol_from_smits(k_vec: np.array, B_entry_vec_XYZ: np.array, B_entry_vec_R
     rho_hat_perp = np.cross(k_vec_hat, B_entry_vec_XYZ_hat) 
 
     # To test for different pol vectors
-    #theta_rho = #np.array([20.993602163927417])*pi/180
-    theta_rho = np.arange(start = -pi/2, stop = pi/2, step = pi/18) # 10 deg increments
+    theta_rho = np.array([20.86284])*pi/180
+    #theta_rho = np.arange(start = -pi/2, stop = pi/2, step = pi/18) # 10 deg increments
 
     rho_hat_rotated = rotate_rodrigues(rho_hat_perp, k_vec_hat, theta_rho)
     print(rho_hat_rotated)
@@ -266,15 +268,16 @@ def get_pol_from_smits(k_vec: np.array, B_entry_vec_XYZ: np.array, B_entry_vec_R
     # Get Bp, Bt at entry
     B_t_entry = B_entry_vec_RtZ[1]
     B_p_entry = sqrt(B_entry_vec_RtZ[0]**2 + B_entry_vec_RtZ[2]**2)
-    pitch_angle_entry = atan(B_p_entry/B_t_entry)
+    pitch_angle_entry = abs(atan(B_p_entry/B_t_entry))
     
     print("pitch angle at entry:", pitch_angle_entry*180/pi)
     print("kb angle at entry: ", theta*180/pi)
     
     # Smits polarization tilt
     phi = acos(cos(pitch_angle_entry)/sin(theta))
+    print("Smits pol tilt angle: ", phi*180/pi)
     # Hypothesized ideal pol angle
-    print((phi+pitch_angle_entry)*180/pi)
+    print((phi+pitch_angle_entry)*180/pi) # abs cus it's cos
     #"""
 
     return rho_hat_perp, mod_E_rho, mod_E_eta, np.column_stack((theta_rho*180/pi, rho_hat_rotated))
@@ -732,7 +735,7 @@ def get_ERMES_parameters(
         with open(path + filename + 'ERMES_params', 'a') as file:
             np.savetxt(file, np.array([params_names, params_val], dtype=object).T, delimiter=' ', header='Beam Params', fmt = '%s')
         with open(path + filename + 'ERMES_params', 'a') as file:
-            np.savetxt(file, rho_hat_rotated_set, header='Rotated Polarization Vector', fmt = '%s')
+            np.savetxt(file, np.round(rho_hat_rotated_set, 1), header='Rotated Polarization Vector', fmt = '%s')
 
     if plot:
         plt.scatter(points_x, points_y, s = 2)
@@ -860,10 +863,10 @@ def calc_Eb_from_scotty(dt: datatree, E0: float = 1.0, wx: float = 0.0, wy: floa
     wy_tau = wy_0 + cumulative_trapezoid(grad_wy_dot_d_r_d_tau, tau_values, initial = 0.0)
     
     w_xyg_tau = np.array([wx_tau, wy_tau, np.zeros(tau_len)]).T
-    w_ant_xyg = w_xyg_tau[0]
-    
+    #w_ant_xyg = w_xyg_tau[0]
     # wPsiw pieces
     def quad_form(vec, mat):
+    
         Calcualte the quadratic form vec dot mat dot vec
 
         Args:
@@ -872,7 +875,7 @@ def calc_Eb_from_scotty(dt: datatree, E0: float = 1.0, wx: float = 0.0, wy: floa
             
         Returns:
             Scalar or list of Scalars of len N
-        
+
         if np.ndim(vec) == 1:
             return np.dot(vec, np.dot(mat, vec))
         else:
@@ -880,7 +883,6 @@ def calc_Eb_from_scotty(dt: datatree, E0: float = 1.0, wx: float = 0.0, wy: floa
     
     w_dot_Psi_w_ant_dot_w_piece = np.abs(np.exp( 1j/2 * quad_form(w_ant_xyg, Psi_w_ant_xyg) ))
     w_dot_Psi_w_dot_w_piece = np.abs(np.exp( 1j/2 * quad_form(w_xyg_tau, Psi_w_xyg_tau) ))
-    
     """
     
     # 4th root piece (det_piece)
@@ -938,7 +940,7 @@ def ERMES_results_to_readable(res: str = None, msh: str = None, dt: datatree = N
 
     # Determine max node ID to allocate array correctly
     max_node_id = max(coords.keys())
-    node_to_xyz = np.zeros((max_node_id + 1, 3))  # + 1 to allow indexing by node ID, note that this creates a 0,0,0 node 0
+    node_to_xyz = np.zeros((max_node_id + 1, 3)) # + 1 to allow indexing by node ID, note that this creates a 0,0,0 node 0
 
     for node_id, xyz in coords.items():
         node_to_xyz[node_id] = xyz
@@ -976,7 +978,40 @@ def ERMES_results_to_readable(res: str = None, msh: str = None, dt: datatree = N
                 value = float(parts[1])
                 modE[node_id] = value
 
-    # Convert to array
+    # E vec along central ray as nodeID
+    with open(os.getcwd() + res, 'r') as f:
+        lines = f.readlines()
+
+    vecE = {}
+    reading = False
+    inside_block = False
+
+    for line in lines:
+        line = line.strip()
+        
+        # Start of the correct block
+        if line.startswith('Result "rE"'):
+            inside_block = True
+            continue
+
+        # Inside correct block, look for Values
+        if inside_block and line.startswith("Values"):
+            reading = True
+            continue
+
+        # End reading values
+        if reading and line.startswith("End Values"):
+            break
+
+        # Read values line
+        if reading:
+            parts = line.split()
+            if len(parts) == 4:
+                node_id = int(parts[0])
+                vector = np.array(list(map(float, parts[1:])))
+                vecE[node_id] = vector
+    
+    # Convert to array (modE)
     max_node = max(modE.keys())
     modE_array = np.zeros(max_node + 1)
     for nid, val in modE.items():
@@ -985,15 +1020,29 @@ def ERMES_results_to_readable(res: str = None, msh: str = None, dt: datatree = N
     common_nodes = min(node_to_xyz.shape[0], modE_array.shape[0])
     modE_xyz = np.hstack((node_to_xyz[:common_nodes], modE_array[:common_nodes].reshape(-1, 1)))
     
+    # Convert to array (vecE)
+    max_node = max(vecE.keys())
+    vecE_array = np.zeros((max_node + 1, 3))
+
+    for nid, vec in vecE.items():
+        vecE_array[nid] = vec
+
+    # Combine with node positions as before
+    common_nodes = min(node_to_xyz.shape[0], vecE_array.shape[0])
+    vecE_xyz = np.hstack((node_to_xyz[:common_nodes], vecE_array[:common_nodes]))
+    tau_len = dt.inputs.len_tau.values
+    
     beam_RZ = np.column_stack([dt.analysis.q_R.values,dt.analysis.q_Z.values])
+    beam_xyz = np.column_stack([dt.analysis.q_R.values,dt.analysis.q_Z.values, np.zeros(tau_len)])
 
     # Extract modE along central ray within some arbitrary tolerance
     tol = grid_resolution/2 # Half of mesh size
+    
     modE_list = []
     data_xy = modE_xyz[1:, :2]
     modE_vals = modE_xyz[1:, 3]
     
-    # to get only modE along the cetnral ray
+    # to get only modE along the central ray
     for xq, yq in beam_RZ:
         dx = np.abs(data_xy[:, 0] - xq)
         dy = np.abs(data_xy[:, 1] - yq)
@@ -1004,12 +1053,71 @@ def ERMES_results_to_readable(res: str = None, msh: str = None, dt: datatree = N
         else:
             modE_list.append(0)
     
+    # Extract vecE along central ray within some arbitrary tolerance
+    vecE_list = []
+    data_xy = vecE_xyz[1:, :2]
+    vecE_vecs = vecE_xyz[1:, 3:6]
+    
+    # to get only modE along the central ray
+    for xq, yq in beam_RZ:
+        dx = np.abs(data_xy[:, 0] - xq)
+        dy = np.abs(data_xy[:, 1] - yq)
+        mask = (dx <= tol) & (dy <= tol)
+
+        if np.any(mask):
+            vecE_list.append(vecE_vecs[mask][0]) # First match
+        else:
+            vecE_list.append(np.array([0.0, 0.0, 0.0]))
+    vecE_array_beam = np.array(vecE_list)
+    
+    # Get beam width for gaussian x-section
     tau_vals = np.arange(len(beam_RZ))
     distance_along_beam = dt.analysis.distance_along_line.values
+    width_at_tau = np.linalg.norm(beam_width(dt.analysis.g_hat, np.array([0.0, 1.0, 0.0]), dt.analysis.Psi_3D), axis=1, keepdims=False)*2 # Slightly larger than 1/e width
+    no_of_points_width_at_tau = 2*(np.rint(width_at_tau/tol))
+    beam_width_range = [np.linspace(-width_at_tau[i], width_at_tau[i], int(no_of_points_width_at_tau[i])) for i in range(tau_len)]
+    ghat_xyz = np.apply_along_axis(RtZ_to_XYZ, axis=1, arr=dt.analysis.g_hat.values)
+
+    beamfront_vector = np.cross(np.array([0.0, 0.0, 1.0]), ghat_xyz)
+    beamfront_vector /= np.linalg.norm(beamfront_vector, axis=1, keepdims=True)
+
+    sample_points_per_tau = []
+    theoretical_transverse_modE_tau = []
+
+    for i in range(tau_len):
+        width = width_at_tau[i]
+        num_samples = int(no_of_points_width_at_tau[i])
+        center = beam_xyz[i]  # full (x,y,z)
+
+        Psi = dt.analysis.Psi_3D_Cartesian.values[i]
+
+        offset = np.linspace(-width, width, num_samples)
+
+        # (num_samples, 3) = (num_samples, 1) * (3,) -> broadcasted properly
+        offset_vecs = offset[:, None] * beamfront_vector[i]  # shape (num_samples, 3), this is w vec in cartesian
+        sample_points = center + offset_vecs  # shape (num_samples, 3)
+
+        quad_vals = np.einsum('ni,ij,nj->n', offset_vecs, Psi, offset_vecs)
+        envelope = np.exp(-0.5*np.imag(quad_vals))
+        
+        theoretical_transverse_modE_tau.append(modE_list[i]*envelope)
+        sample_points_per_tau.append(sample_points)
+        
+    xyz_grid = modE_xyz[:, :3]
+    modE_vals = modE_xyz[:, 3]
+    tree = cKDTree(xyz_grid)
+
+    gaussian_modE_profiles = []
+    for points in sample_points_per_tau:
+        _, indices = tree.query(points)
+        gaussian_modE_profiles.append(modE_vals[indices])
+    
+    
+    # Plot it!
     if plot:
         print("Plotting modE in R,Z from ERMES and Scotty")
         # Plot modE over R Z
-        # Filter points near desired z-slice, arrays start from 1 cus first node in 0,0. Don't ask me why, ERMES things.
+        # Filter points near desired z-slice, arrays start from 1 cus first node in 0,0,0
         mask = np.where(np.abs(modE_xyz[1:, 2]) < tol)
         filtered = modE_xyz[mask]
 
@@ -1062,9 +1170,7 @@ def ERMES_results_to_readable(res: str = None, msh: str = None, dt: datatree = N
         if compare: 
             theoretical_modE_tau = calc_Eb_from_scotty(dt=dt, wx=dt.inputs.launch_beam_width.values, wy=dt.inputs.launch_beam_width.values, E0 = modE_list[0])
             plt.scatter(distance_along_beam, theoretical_modE_tau, marker='.', color = 'orange')
-        
-        np.set_printoptions(threshold=np.inf)
-        #print(ratio)
+
         
         plt.xlabel("Distance along central ray (m)")
         plt.ylabel("mod(E), normalized (A.U.)")
@@ -1076,6 +1182,85 @@ def ERMES_results_to_readable(res: str = None, msh: str = None, dt: datatree = N
         plt.ylim(bottom = 0)
         plt.tight_layout()
         plt.show()
+        
+        print("Plotting rE vector vs tau from ERMES and Scotty")
+        
+        # Compute components and magnitude
+        E_x = vecE_array_beam[:, 0]
+        E_y = vecE_array_beam[:, 1]
+        E_z = vecE_array_beam[:, 2]
+        
+        # Define the 3D transverse basis
+        e_y = np.array([0.0, 1.0, 0.0])
+        t2 = np.cross(ghat_xyz, e_y)
+        t2 = t2/np.linalg.norm(t2, axis=1, keepdims=True)
+        t1 = np.tile(e_y, (ghat_xyz.shape[0], 1))
+        
+        # Project vecE onto this transverse plane
+        E_t1 = np.einsum('ij,ij->i', vecE_array_beam, t1) # projection onto e_y (Ez)
+        E_t2 = np.einsum('ij,ij->i', vecE_array_beam, t2) # projection onto transverse axis
+
+        # Reconstruct transverse vectors (for quiver plotting)
+        E_transverse = np.stack([E_t2, E_t1], axis=1)
+        values = {'E_x': E_x, 'E_y': E_y, 'E_z': E_z}
+
+        # Set up figure and axis
+        fig, ax = plt.subplots()
+        plt.subplots_adjust(bottom=0.25)
+
+        q = ax.quiver(0, 0, E_transverse[0, 0], E_transverse[0, 1], angles='xy', scale_units='xy', scale=1, color='blue')
+        ax.set_xlim(-1.1*np.max(np.abs(E_transverse)), 1.1*np.max(np.abs(E_transverse)))
+        ax.set_ylim(-1.1*np.max(np.abs(E_transverse)), 1.1*np.max(np.abs(E_transverse)))
+        ax.set_xlabel(r"$t_2$ direction (in-plane)")
+        ax.set_ylabel(r"$t_1$ direction (z-axis)")
+        ax.set_title(f"Transverse Electric Field at {distance_along_beam[0]:.3f}m along central ray")
+        ax.grid(True)
+        ax.set_aspect('equal')
+
+        # Slider axis
+        ax_slider = plt.axes([0.2, 0.1, 0.6, 0.03])
+        slider = Slider(ax_slider, 'τ Index', 0, len(tau_vals)-1, valinit=0, valstep=1)
+
+        def update(val):
+            i = int(slider.val)
+            q.set_UVC(E_transverse[i, 0], E_transverse[i, 1])
+            ax.set_title(f"Transverse Electric Field vector at {distance_along_beam[i]:.3f}m along central ray")
+            fig.canvas.draw_idle()
+
+        slider.on_changed(update)
+        plt.show()
+        
+        # Transverse gaussian beam front
+        print("Plotting transverse gaussian beamfront")
+        
+        #
+        
+        fig, ax = plt.subplots()
+        plt.subplots_adjust(bottom=0.2)
+
+        scatter = ax.scatter(beam_width_range[0], gaussian_modE_profiles[0], color = 'red', s=15)  # first slice
+        line, = ax.plot(beam_width_range[0], theoretical_transverse_modE_tau[0], '-', linewidth=5, color = 'orange')
+        ax.set_xlabel("Distance from beam center (m)")
+        ax.set_ylabel("|E|")
+        ax.set_title(f"Transverse gaussian beamfront at {distance_along_beam[0]:.3f}m along central ray")
+        ax.set_xlim(-np.max(width_at_tau), np.max(width_at_tau))
+        ax.set_ylim(0, 1.1*np.max(modE_list))
+
+        ax_slider = plt.axes([0.2, 0.05, 0.6, 0.03])
+        tau_slider = Slider(ax_slider, r'$\tau$ index', 0, tau_len - 1, valinit=0, valstep=1)
+
+        def update(val):
+            i = int(tau_slider.val)
+            scatter.set_offsets(np.column_stack([beam_width_range[i], gaussian_modE_profiles[i]]))
+            scatter.set_array(gaussian_modE_profiles[i])
+            line.set_data(beam_width_range[i], theoretical_transverse_modE_tau[i])
+            ax.autoscale_view()
+            ax.set_title(f"Transverse gaussian beamfront at {distance_along_beam[i]:.3f}m along central ray")
+            fig.canvas.draw_idle()
+
+        tau_slider.on_changed(update)
+        plt.show()
+        
     
 if __name__ == '__main__':
     # Maybe I could run scotty here as well so it is instantaenous lol
@@ -1103,16 +1288,16 @@ if __name__ == '__main__':
     #DIII-D
     """
     get_ERMES_parameters(
-        dt=load_scotty_data('\\Output\\scotty_output_freq72.5_pol-15.0_rev.h5'),
+        dt=load_scotty_data('\\Output\\scotty_output_freq72.5_pol-3.0_rev.h5'),
         suffix="DIII-D_",
-        launch_angle=15.0, 
+        launch_angle=3.0, 
         launch_freq_GHz=72.5, 
         port_width=0.01, 
         #launch_positon=[3.01346,0,-0.09017],
         #launch_beam_curvature=-0.95, 
         #launch_beam_width=0.125, 
         dist_to_ERMES_port=0.55, 
-        domain_size=0.45, 
+        domain_size=0.40, 
         ne_path = '\\source_data\\ne_189998_3000ms_quinn.dat', 
         topfile_path = '\\source_data\\topfile_189998_3000ms_quinn.json',
         num_RZ = 25,
@@ -1133,11 +1318,11 @@ if __name__ == '__main__':
     # Text ERMES output to something readable
     #"""
     ERMES_results_to_readable(
-        res="\\ERMES_output_files\\DIII-D_15_degree_72_5_5e-4_no_damping.post.res", 
-        msh="\\ERMES_output_files\\DIII-D_15_degree_72_5_5e-4_no_damping.post.msh",
-        dt=load_scotty_data('\\Output\\scotty_output_freq72.5_pol-15.0_rev.h5'),
+        res="\\ERMES_output_files\\DIII-D_7_degree_72_5_EDG2_no_damping.post.res", 
+        msh="\\ERMES_output_files\\DIII-D_7_degree_72_5_EDG2_no_damping.post.msh",
+        dt=load_scotty_data('\\Output\\scotty_output_freq72.5_pol-7.0_rev.h5'),
         plot=True,
         compare=True,
-        grid_resolution=5e-4,
+        grid_resolution=8e-4,
     )
     #"""
