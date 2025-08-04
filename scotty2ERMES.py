@@ -20,7 +20,7 @@ References
 
 Written by Dylan James Mc Kaige
 Created: 16/5/2025
-Updated: 30/7/2025
+Updated: 4/8/2025
 """
 import os, json, datatree
 import numpy as np
@@ -905,20 +905,20 @@ def calc_Eb_from_scotty(dt: datatree, E0: float = 1.0, wx: float = 0.0, wy: floa
     
     return Eb_tau
 
-def ERMES_results_to_readable(res: str = None, msh: str = None, dt: datatree = None, plot: bool = False, compare: bool = False, grid_resolution: float = 8e-4):
+def ERMES_nodes_to_xyz(msh_file: str):
     """
-    Plot ERMES modE in R,Z with Scotty overlaid, Plot ERMES modE along central ray with Scotty modE calculations..
+    Load in the .msh file to read each node as nodeID and return the cartesian cooridnates of that node in xyz. 
+    Note that to allow indexing by node, an additional (0,0,0) node is created.
     
     Args:
-        res (str): path to the .res file
-        msh (str): path to the .msh file
-        dt (datatree): Scotty output file
-        plot (bool): Plot it!
-        compare (bool): Compare with theoretical calulations
+        msh_file (str): ERMES msh file
+        
+    Returns:
+        node_to_xyz (dict): Dictionary of node xyz coordinates with nodeID as the key
     """
-    print("Reading ERMES msh and res files")
+    print("Reading ERMES msh file")
     # Node ID as XYZ coords
-    with open(os.getcwd() + msh, 'r') as f:
+    with open(os.getcwd() + msh_file, 'r') as f:
         lines = f.readlines()
 
     coords = {}
@@ -940,16 +940,42 @@ def ERMES_results_to_readable(res: str = None, msh: str = None, dt: datatree = N
 
     # Determine max node ID to allocate array correctly
     max_node_id = max(coords.keys())
-    node_to_xyz = np.zeros((max_node_id + 1, 3)) # + 1 to allow indexing by node ID, note that this creates a 0,0,0 node 0
+    node_to_xyz = np.zeros((max_node_id + 1, 3)) # + 1 to allow indexing by node ID, note that this creates a (0,0,0) node 0
 
     for node_id, xyz in coords.items():
         node_to_xyz[node_id] = xyz
+    
+    return node_to_xyz
         
-    # modE as nodeID
-    with open(os.getcwd() + res, 'r') as f:
+def ERMES_results_to_node(res_file: str, result_name: str):
+    """
+    Load in the .res file to read each result as nodeID and return the value of result_name at that node. Supports scalar and vector results
+    
+    Args:
+        res_file (str): ERMES res file
+        result_name (str): Name of the result, as saved by ERMES, that is wanted
+        
+    Returns:
+        result (dict): Dictionary of result value (scalar or vector) with nodeID as the key
+    """
+    print(f"Reading ERMES res file for '{result_name}' results")
+    
+    # Non-exhaustive, to be completed eventually (tm)
+    valid_results = [
+        "mod(E)",
+        "mod(B)",
+        "rE",
+        "rB",
+        "iE",
+        "iB",
+    ]
+    
+    assert result_name in valid_results, "Invalid result, consult ERMES 20.0 documentation or your res file on output result names"
+    
+    with open(os.getcwd() + res_file, 'r') as f:
         lines = f.readlines()
 
-    modE = {}
+    result = {}
     reading = False
     inside_block = False
 
@@ -957,7 +983,7 @@ def ERMES_results_to_readable(res: str = None, msh: str = None, dt: datatree = N
         line = line.strip()
         
         # Start of the correct block
-        if line.startswith('Result "mod(E)"'):
+        if line.startswith(f'Result "{result_name}"'):
             inside_block = True
             continue
 
@@ -973,87 +999,74 @@ def ERMES_results_to_readable(res: str = None, msh: str = None, dt: datatree = N
         # Read values line
         if reading:
             parts = line.split()
+            
+            # Scalar?
             if len(parts) == 2:
                 node_id = int(parts[0])
                 value = float(parts[1])
-                modE[node_id] = value
-
-    # E vec along central ray as nodeID
-    with open(os.getcwd() + res, 'r') as f:
-        lines = f.readlines()
-
-    vecE = {}
-    reading = False
-    inside_block = False
-
-    for line in lines:
-        line = line.strip()
-        
-        # Start of the correct block
-        if line.startswith('Result "rE"'):
-            inside_block = True
-            continue
-
-        # Inside correct block, look for Values
-        if inside_block and line.startswith("Values"):
-            reading = True
-            continue
-
-        # End reading values
-        if reading and line.startswith("End Values"):
-            break
-
-        # Read values line
-        if reading:
-            parts = line.split()
-            if len(parts) == 4:
+                result[node_id] = value
+                
+            # Vector?
+            elif len(parts) == 4:
                 node_id = int(parts[0])
                 vector = np.array(list(map(float, parts[1:])))
-                vecE[node_id] = vector
+                result[node_id] = vector
+                
+            else: 
+                print("Did not expect to reach this, please fix")
     
-    # Convert to array (modE)
-    max_node = max(modE.keys())
-    modE_array = np.zeros(max_node + 1)
-    for nid, val in modE.items():
-        modE_array[nid] = val
-        
-    common_nodes = min(node_to_xyz.shape[0], modE_array.shape[0])
-    modE_xyz = np.hstack((node_to_xyz[:common_nodes], modE_array[:common_nodes].reshape(-1, 1)))
-    
-    # Convert to array (vecE)
-    max_node = max(vecE.keys())
-    vecE_array = np.zeros((max_node + 1, 3))
+    return result
 
+def ERMES_results_to_plots(res: str = None, msh: str = None, dt: datatree = None, plot: bool = False, compare: bool = False, grid_resolution: float = 8e-4):
+    """
+    Plot ERMES modE in R,Z with Scotty overlaid, Plot ERMES modE, rE vec, transverse modE along central ray with Scotty calculations where applicable.
+    
+    Args:
+        res (str): path to the .res file
+        msh (str): path to the .msh file
+        dt (datatree): Scotty output file
+        plot (bool): Plot it!
+        compare (bool): Compare with theoretical calulations
+    """
+    # Node ID as XYZ coords
+    node_to_xyz = ERMES_nodes_to_xyz(msh_file=msh)
+        
+    # modE as nodeID
+    modE = ERMES_results_to_node(res_file=res, result_name="mod(E)")   
+
+    # rE as nodeID
+    vecE = ERMES_results_to_node(res_file=res, result_name="rE")
+    
+    # Convert to array
+    max_node = max(modE.keys()) # all results will have the same number of nodes
+    modE_array = np.zeros(max_node + 1)
+    vecE_array = np.zeros((max_node + 1, 3))
+    for i, val in modE.items():
+        modE_array[i] = val
     for nid, vec in vecE.items():
         vecE_array[nid] = vec
+    
+    # Convert to xyz
+    common_nodes = min(node_to_xyz.shape[0], modE_array.shape[0])
+    modE_xyz = np.hstack((node_to_xyz[:common_nodes], modE_array[:common_nodes].reshape(-1, 1)))
 
-    # Combine with node positions as before
+    # Convert to xyz
     common_nodes = min(node_to_xyz.shape[0], vecE_array.shape[0])
     vecE_xyz = np.hstack((node_to_xyz[:common_nodes], vecE_array[:common_nodes]))
     tau_len = dt.inputs.len_tau.values
     
+    # Central beam
     beam_RZ = np.column_stack([dt.analysis.q_R.values,dt.analysis.q_Z.values])
     beam_xyz = np.column_stack([dt.analysis.q_R.values,dt.analysis.q_Z.values, np.zeros(tau_len)])
 
-    # Extract modE along central ray within some arbitrary tolerance
+    # Extract vecE and modE along central ray within tolerance
     tol = grid_resolution/2 # Half of mesh size
     
     modE_list = []
     data_xy = modE_xyz[1:, :2]
     modE_vals = modE_xyz[1:, 3]
     
-    # to get only modE along the central ray
-    for xq, yq in beam_RZ:
-        dx = np.abs(data_xy[:, 0] - xq)
-        dy = np.abs(data_xy[:, 1] - yq)
-        mask = (dx <= tol) & (dy <= tol)
-
-        if np.any(mask):
-            modE_list.append(modE_vals[mask][0]) # First match
-        else:
-            modE_list.append(0)
-    
-    # Extract vecE along central ray within some arbitrary tolerance
+    # Extract vecE along central ray within tolerance
     vecE_list = []
     data_xy = vecE_xyz[1:, :2]
     vecE_vecs = vecE_xyz[1:, 3:6]
@@ -1065,10 +1078,13 @@ def ERMES_results_to_readable(res: str = None, msh: str = None, dt: datatree = N
         mask = (dx <= tol) & (dy <= tol)
 
         if np.any(mask):
+            modE_list.append(modE_vals[mask][0]) # First match
             vecE_list.append(vecE_vecs[mask][0]) # First match
         else:
+            modE_list.append(0)
             vecE_list.append(np.array([0.0, 0.0, 0.0]))
-    vecE_array_beam = np.array(vecE_list)
+
+    vecE_array_beam = np.array(vecE_list) # convert to array
     
     # Get beam width for gaussian x-section
     tau_vals = np.arange(len(beam_RZ))
@@ -1232,9 +1248,7 @@ def ERMES_results_to_readable(res: str = None, msh: str = None, dt: datatree = N
         
         # Transverse gaussian beam front
         print("Plotting transverse gaussian beamfront")
-        
-        #
-        
+
         fig, ax = plt.subplots()
         plt.subplots_adjust(bottom=0.2)
 
@@ -1317,10 +1331,10 @@ if __name__ == '__main__':
     """
     # Text ERMES output to something readable
     #"""
-    ERMES_results_to_readable(
-        res="\\ERMES_output_files\\DIII-D_7_degree_72_5_EDG2_no_damping.post.res", 
-        msh="\\ERMES_output_files\\DIII-D_7_degree_72_5_EDG2_no_damping.post.msh",
-        dt=load_scotty_data('\\Output\\scotty_output_freq72.5_pol-7.0_rev.h5'),
+    ERMES_results_to_plots(
+        res="\\ERMES_output_files\\DIII-D_9_degree_72_5_no_damping.post.res", 
+        msh="\\ERMES_output_files\\DIII-D_9_degree_72_5_no_damping.post.msh",
+        dt=load_scotty_data('\\Output\\scotty_output_freq72.5_pol-9.0_rev.h5'),
         plot=True,
         compare=True,
         grid_resolution=8e-4,
