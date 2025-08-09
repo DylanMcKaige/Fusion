@@ -241,12 +241,26 @@ def get_pol_from_smits(k_vec: np.array, B_entry_vec_XYZ: np.array, B_entry_vec_R
     # Get the rho unit vector that is perp to k and b. This is our initial & supposedly ideal pol ( It is not, seems to be ~20deg off )
     rho_hat_perp = np.cross(k_vec_hat, B_entry_vec_XYZ_hat) 
 
+    # Get Bp, Bt at entry
+    B_t_entry = B_entry_vec_RtZ[1]
+    B_p_entry = sqrt(B_entry_vec_RtZ[0]**2 + B_entry_vec_RtZ[2]**2)
+    pitch_angle_entry = abs(atan(B_p_entry/B_t_entry))
+    
+    print("pitch angle at entry:", pitch_angle_entry*180/pi)
+    print("kb angle at entry: ", theta*180/pi)
+    
+    # Smits polarization tilt
+    phi = acos(cos(pitch_angle_entry)/sin(theta))
+    print("Smits pol tilt angle: ", phi*180/pi)
+    # Hypothesized ideal pol angle
+    print("Hypthesis pol angle: ", (phi+pitch_angle_entry)*180/pi) # abs cus it's cos
+    
     # To test for different pol vectors
-    theta_rho = np.array([20.86284])*pi/180
+    theta_rho = np.array([phi+pitch_angle_entry])
     #theta_rho = np.arange(start = -pi/2, stop = pi/2, step = pi/18) # 10 deg increments
 
     rho_hat_rotated = rotate_rodrigues(rho_hat_perp, k_vec_hat, theta_rho)
-    #print(rho_hat_rotated)
+    print(rho_hat_rotated)
     mod_E_rho = np.sqrt(E0**2 / (1 + np.tan(gamma)**2))# rho_hat_kb
     mod_E_eta = np.sqrt(E0**2 - mod_E_rho**2) # eta_hat_kb
     
@@ -266,19 +280,7 @@ def get_pol_from_smits(k_vec: np.array, B_entry_vec_XYZ: np.array, B_entry_vec_R
     # Keep as RHC (thetarho = 0, thetatea = -90)
     # Polairzation tilt from [5]
     
-    # Get Bp, Bt at entry
-    B_t_entry = B_entry_vec_RtZ[1]
-    B_p_entry = sqrt(B_entry_vec_RtZ[0]**2 + B_entry_vec_RtZ[2]**2)
-    pitch_angle_entry = abs(atan(B_p_entry/B_t_entry))
     
-    print("pitch angle at entry:", pitch_angle_entry*180/pi)
-    print("kb angle at entry: ", theta*180/pi)
-    
-    # Smits polarization tilt
-    phi = acos(cos(pitch_angle_entry)/sin(theta))
-    print("Smits pol tilt angle: ", phi*180/pi)
-    # Hypothesized ideal pol angle
-    print("Hypthesis pol angle: ", (phi+pitch_angle_entry)*180/pi) # abs cus it's cos
 
     return rho_hat_perp, mod_E_rho, mod_E_eta, np.column_stack((theta_rho*180/pi, rho_hat_rotated))
 
@@ -345,7 +347,7 @@ def process_scotty_input_data(
     pol_flux_spline = RectBivariateSpline(R, Z, pol_flux_RZ.T)
     pol_flux_vals = pol_flux_spline.ev(R_grid, Z_grid)
 
-    ne_vals_total = ne_spline(pol_flux_vals)*1e19
+    ne_vals_total = ne_spline(pol_flux_vals)
 
     # Save only the necessary range for ERMES
     R_range = np.linspace(ERMES_R[0], ERMES_R[1], num_RZ)
@@ -353,7 +355,7 @@ def process_scotty_input_data(
     R_grid_to_ERMES, Z_grid_to_ERMES = np.meshgrid(R_range, Z_range)
 
     pol_flux_vals_to_ERMES = pol_flux_spline.ev(R_grid_to_ERMES, Z_grid_to_ERMES)
-    ne_vals_to_ERMES = ne_spline(pol_flux_vals_to_ERMES)*1e19 # Since the data was normalised by 1e19
+    ne_vals_to_ERMES = ne_spline(pol_flux_vals_to_ERMES)
 
     Br_spline = RectBivariateSpline(R, Z, Br.T)
     Bt_spline = RectBivariateSpline(R, Z, Bt.T)
@@ -417,7 +419,7 @@ def process_scotty_input_data(
         
         plt.figure(figsize=(8, 6))
 
-        cf = plt.contourf(R_grid, Z_grid, ne_vals_total, levels=100, cmap='plasma')
+        cf = plt.contourf(R_grid, Z_grid, ne_vals_total*1e19, levels=100, cmap='plasma')
         pol_flux_levels = np.linspace(0.0, 1.0, 11)
         cs = plt.contour(R_grid, Z_grid, pol_flux_vals, levels=pol_flux_levels, colors='black', linewidths=0.8)
         
@@ -430,7 +432,7 @@ def process_scotty_input_data(
         plt.tight_layout()
         plt.show()
         
-        cf = plt.contourf(R_grid_to_ERMES, Z_grid_to_ERMES, ne_vals_to_ERMES, levels=100, cmap='plasma')
+        cf = plt.contourf(R_grid_to_ERMES, Z_grid_to_ERMES, ne_vals_to_ERMES*1e19, levels=100, cmap='plasma')
         pol_flux_levels = np.linspace(0.0, 1.0, 11)
         cs = plt.contour(R_grid_to_ERMES, Z_grid_to_ERMES, pol_flux_vals_to_ERMES, levels=pol_flux_levels, colors='black', linewidths=0.8)
         #plt.contour(R_grid_to_ERMES, Z_grid_to_ERMES, w_R, levels = w_levels, colors='white', linewidths=2)
@@ -1008,7 +1010,7 @@ def ERMES_results_to_node(res_file: str, result_name: str):
     
     return result
 
-def gaussian_1e(x, A, x0, w):
+def gaussian_fit(x, A, x0, w):
     """
     Gaussian fit function for 1/e width
 
@@ -1021,7 +1023,7 @@ def gaussian_1e(x, A, x0, w):
     Returns:
         gaussian: Generic gaussian curve for fitting
     """
-    return A * np.exp(-((x - x0) ** 2) / w ** 2)
+    return A * np.exp( -((x - x0)**2) / (w**2) )
 
 def fit_gaussian_width(offsets_per_tau, modE_profiles):
     """
@@ -1043,12 +1045,12 @@ def fit_gaussian_width(offsets_per_tau, modE_profiles):
     for x, E in zip(offsets_per_tau, modE_profiles):
         try:
             p0 = [np.max(E), 0.0, (np.max(x) - np.min(x)) / 2]
-            popt, _ = curve_fit(gaussian_1e, x, E, p0=p0)
+            popt, _ = curve_fit(gaussian_fit, x, E, p0=p0)
             A_fit, x0_fit, w_fit = popt
 
             # Evaluate fitted curve
-            E_fit = gaussian_1e(x, *popt)
-            chi2 = np.sum((E - E_fit) ** 2)
+            E_fit = gaussian_fit(x, *popt)
+            chi2 = np.sum((E_fit - E) ** 2 / E)
 
             fit_params.append([A_fit, x0_fit, w_fit])
             fitted_widths.append(np.abs(w_fit))
@@ -1059,8 +1061,25 @@ def fit_gaussian_width(offsets_per_tau, modE_profiles):
             chi2_list.append(np.nan)
 
     return fitted_widths, fit_params, chi2_list
+    
+def get_relative_error(observed_data, actual_data):
+    """
+    Returns the relative error between observed and actual
 
-def ERMES_results_to_plots(res: str = None, msh: str = None, dt: datatree = None, plot: bool = False, compare: bool = False, grid_resolution: float = 8e-4):
+    Args:
+        observed_data (array): Observed/ Experimental Data
+        actual_data (array): Actual/ Theoretical Data
+    """
+    observed_data = np.asarray(observed_data)
+    actual_data = np.asarray(actual_data)
+    
+    assert observed_data.shape == actual_data.shape, "Input arrays must have the same shape"
+    
+    err = np.abs(observed_data - actual_data)/np.abs(actual_data)
+    
+    return err
+
+def ERMES_results_to_plots(res: str = None, msh: str = None, dt: datatree = None, plot: bool = False, save: bool = True, grid_resolution: float = 8e-4):
     """
     Plot ERMES modE in R,Z with Scotty overlaid, Plot ERMES modE, rE vec, transverse modE along central ray with Scotty calculations where applicable.
     
@@ -1069,7 +1088,6 @@ def ERMES_results_to_plots(res: str = None, msh: str = None, dt: datatree = None
         msh (str): path to the .msh file
         dt (datatree): Scotty output file
         plot (bool): Plot it!
-        compare (bool): Compare with theoretical calulations
     """
     # Node ID as XYZ coords
     node_to_xyz = ERMES_nodes_to_xyz(msh_file=msh)
@@ -1146,7 +1164,13 @@ def ERMES_results_to_plots(res: str = None, msh: str = None, dt: datatree = None
     tau_vals = np.arange(len(beam_RZ))
     width_factor = 2 # n times of the width to visualize
     distance_along_beam = dt.analysis.distance_along_line.values
-    width_at_tau = np.linalg.norm(beam_width(dt.analysis.g_hat, np.array([0.0, 1.0, 0.0]), dt.analysis.Psi_3D), axis=1, keepdims=False)*width_factor
+    width_at_tau = np.linalg.norm(
+                                np.array([
+                                    beam_width(dt.analysis.g_hat, np.array([0.0, 1.0, 0.0]), dt.analysis.Psi_3D).sel(col="R"), 
+                                    beam_width(dt.analysis.g_hat, np.array([0.0, 1.0, 0.0]), dt.analysis.Psi_3D).sel(col="Z")]).T, 
+                                axis=1, 
+                                keepdims=False
+                                )*width_factor
     no_of_points_width_at_tau = (np.rint(width_at_tau/tol))
     beam_width_range = [np.linspace(-width_at_tau[i], width_at_tau[i], int(no_of_points_width_at_tau[i])) for i in range(tau_len)]
     ghat_xyz = np.apply_along_axis(RtZ_to_XYZ, axis=1, arr=dt.analysis.g_hat.values)
@@ -1159,16 +1183,12 @@ def ERMES_results_to_plots(res: str = None, msh: str = None, dt: datatree = None
     offsets_per_tau = []
 
     for i in range(tau_len):
-        width = width_at_tau[i]
-        num_samples = int(no_of_points_width_at_tau[i])
-        center = beam_xyz[i]  # full (x,y,z)
-
         Psi = dt.analysis.Psi_3D_Cartesian.values[i]
 
-        offset = np.linspace(-width, width, num_samples)
+        offset = np.linspace(-width_at_tau[i], width_at_tau[i], int(no_of_points_width_at_tau[i]))
         offsets_per_tau.append(offset)
-        offset_vecs = offset[:, None] * beamfront_vector[i] # shape (num_samples, 3), this is w vec in cartesian
-        sample_points = center + offset_vecs # shape (num_samples, 3)
+        offset_vecs = offset[:, None] * beamfront_vector[i] # shape (num_samples, 3), this is w vec in cartesian x,y plane
+        sample_points = beam_xyz[i] + offset_vecs # shape (num_samples, 3)
 
         quad_vals = np.einsum('ni,ij,nj->n', offset_vecs, Psi, offset_vecs)
         envelope = np.exp(-0.5*np.imag(quad_vals))
@@ -1206,7 +1226,7 @@ def ERMES_results_to_plots(res: str = None, msh: str = None, dt: datatree = None
         S_dot_g = np.dot(S_vecs, ghat) # shape (num_samples,)
 
         # Integrate using trapezoidal rule over transverse line
-        dx = tol # approx element width
+        dx = grid_resolution # approx element width
         total_flux = np.trapz(S_dot_g, dx=dx)
         
         poynting_flux_per_tau.append(total_flux)
@@ -1241,7 +1261,7 @@ def ERMES_results_to_plots(res: str = None, msh: str = None, dt: datatree = None
         plt.title(r"Results for ERMES & Scotty, $\theta_{launch}$="
                   + f"{handle_scotty_launch_angle_sign(dt=dt)}" 
                   + r"$^\circ$" 
-                  + f",f={dt.inputs.launch_freq_GHz.values}GHz")
+                  + f", f={dt.inputs.launch_freq_GHz.values}GHz")
         plt.colorbar(c, label='modE')
         
         # Plot flux surfaces to 'visualize' the plasma
@@ -1274,16 +1294,21 @@ def ERMES_results_to_plots(res: str = None, msh: str = None, dt: datatree = None
         plt.title(r"mod(E) vs Distance along central ray, $\theta_{launch}$="
                   + f"{handle_scotty_launch_angle_sign(dt=dt)}" 
                   + r"$^\circ$" 
-                  + f",f={dt.inputs.launch_freq_GHz.values}GHz")
+                  + f", f={dt.inputs.launch_freq_GHz.values}GHz")
         plt.xlim(0, distance_along_beam[-1])
         plt.ylim(bottom = 0)
         plt.tight_layout()
         plt.show()
         
+        # Relative err of modE
+        err_modE = get_relative_error(modE_list, theoretical_modE_tau)
+        plt.scatter(distance_along_beam, err_modE, color = 'red', s = 15)
+        plt.xlabel("Distance along central ray (m)")
+        plt.ylabel("Relative error")
+        plt.title("Relative error between ERMES and Scotty modE along central ray")
+        plt.show()
+        
         print("Plotting rE vector vs tau from ERMES and Scotty")
-        
-
-        
         # Define the 3D transverse basis
         e_y = np.array([0.0, 1.0, 0.0])
         t2 = np.cross(ghat_xyz, e_y)
@@ -1355,28 +1380,41 @@ def ERMES_results_to_plots(res: str = None, msh: str = None, dt: datatree = None
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 6), sharex=True, height_ratios=[2, 1])
 
         # Top subplot: width
-        ax1.plot(distance_along_beam, width_at_tau/width_factor, label="Scotty width", color='tab:blue')
-        ax1.plot(distance_along_beam, np.array(fitted_widths), label="Fitted ERMES width", color='tab:blue')
+        ax1.plot(distance_along_beam, np.linalg.norm(width.values, axis = 1), label="Scotty width", color='orange')
+        ax1.plot(distance_along_beam, np.array(fitted_widths), label="Fitted ERMES width", color='red')
         ax1.vlines(distance_along_beam[tau_cutoff], ymin=ax1.get_ylim()[0], ymax = ax1.get_ylim()[1], linestyles='dashed', color='blue')
         ax1.set_ylabel("Width (m)")
-        ax1.set_title("Gaussian fit of modE transverse slice")
+        ax1.set_title("Beam widths")
         ax1.legend()
 
         # Bottom subplot: chi**2
-        ax2.plot(distance_along_beam, chi2_list, label=r"$\chi^2$ of ERMES fit", color='tab:red')
+        ax2.plot(distance_along_beam, chi2_list, label=r"$\chi^2$ of ERMES fit", color='red')
         ax2.vlines(distance_along_beam[tau_cutoff], ymin=ax2.get_ylim()[0], ymax = ax2.get_ylim()[1], linestyles='dashed', color='blue')
-        ax2.set_xlabel("Distance along beam (m)")
+        ax2.set_xlabel("Distance along central ray (m)")
         ax2.set_ylabel(r"$\chi^2$")
         ax2.legend()
         plt.show()
         
+        # Relative err of beam_width
+        err_width = get_relative_error(fitted_widths, np.linalg.norm(width.values, axis = 1))
+        plt.scatter(distance_along_beam, err_width, color = 'red', s = 15)
+        plt.xlabel("Distance along central ray (m)")
+        plt.ylabel("Relative error")
+        plt.title("Relative error between ERMES and Scotty beam widths")
+        plt.show()
+        
         # Poynting flux
         plt.scatter(distance_along_beam, poynting_flux_per_tau, color = 'red', s = 15)
+        plt.ylim(0, 1.1) # Since it should be 1
         plt.vlines(distance_along_beam[tau_cutoff], ymin=plt.gca().get_ylim()[0], ymax = plt.gca().get_ylim()[1], linestyles='--', color='blue')
         plt.xlabel("Distance along central ray (m)")
         plt.ylabel("Power flux (W/m)")
         plt.title("Poynting flux across beamfront along central ray")
         plt.show()
+        
+        # Save the errors
+        if save:
+            np.savez(os.getcwd() + f"\\{dt.inputs.launch_freq_GHz.values}_{handle_scotty_launch_angle_sign(dt)}_errors", err_modE, err_width)
          
 if __name__ == '__main__':
     # Maybe I could run scotty here as well so it is instantaenous lol
@@ -1392,19 +1430,19 @@ if __name__ == '__main__':
         #launch_beam_curvature=-0.7497156475519201, 
         #launch_beam_width=0.07596928872724663, 
         dist_to_ERMES_port=0.85, 
-        domain_size=0.45, 
+        domain_size=0.6, 
         ne_path = '\\MAST-U\\ne_45290_150ms.dat', 
         topfile_path = '\\MAST-U\\topfile_45290_150ms.json',
-        num_RZ = 25,
-        plot=True,
-        save=False,
+        num_RZ = 100,
+        plot=False,
+        save=True,
         )
     #"""
     
     #DIII-D
     """
     get_ERMES_parameters(
-        dt=load_scotty_data('\\Output\\scotty_output_freq72.5_pol-3.0_rev.h5'),
+        dt=load_scotty_data('\\Output\\scotty_output_freq72.5_pol-7.0_rev.h5'),
         suffix="DIII-D_",
         launch_angle=3.0, 
         launch_freq_GHz=72.5, 
@@ -1416,7 +1454,7 @@ if __name__ == '__main__':
         domain_size=0.40, 
         ne_path = '\\source_data\\ne_189998_3000ms_quinn.dat', 
         topfile_path = '\\source_data\\topfile_189998_3000ms_quinn.json',
-        num_RZ = 25,
+        num_RZ = 100,
         plot=False,
         save=False,
         )
@@ -1434,11 +1472,54 @@ if __name__ == '__main__':
     # Text ERMES output to plots
     #"""
     ERMES_results_to_plots(
-        res="\\ERMES_output_files\\DIII-D_15_degree_72_5_5e-4_no_damping.post.res", 
-        msh="\\ERMES_output_files\\DIII-D_15_degree_72_5_5e-4_no_damping.post.msh",
-        dt=load_scotty_data('\\Output\\scotty_output_freq72.5_pol-15.0_rev.h5'),
+        res="\\ERMES_output_files\\MAST-U_13_degree_EDG2_40.post.res", 
+        msh="\\ERMES_output_files\\MAST-U_13_degree_EDG2_40.post.msh",
+        dt=load_scotty_data('\\MAST-U\\scotty_output_freq40.0_pol-13.0_rev.h5'),
+        #res="\\ERMES_output_files\\DIII-D_3_degree_72_5_EDG2_no_damping_morene.post.res", 
+        #msh="\\ERMES_output_files\\DIII-D_3_degree_72_5_EDG2_no_damping_morene.post.msh",
+        #dt=load_scotty_data('\\Output\\scotty_output_freq72.5_pol-3.0_rev.h5'),
         plot=True,
-        compare=True,
-        grid_resolution=5e-4,
+        grid_resolution=8e-4,
+        save=False,
     )
+    #"""
+    
+    """
+    err_15 = np.load(os.getcwd()+"\\72.5_15_errors.npz")
+    err_7 = np.load(os.getcwd()+"\\72.5_7_errors.npz")
+    err_3 = np.load(os.getcwd()+"\\72.5_3_errors.npz")
+    
+    err_3_beam, err_3_width = err_3['arr_0'], err_3['arr_1']
+    err_7_beam, err_7_width = err_7['arr_0'], err_7['arr_1']
+    err_15_beam, err_15_width = err_15['arr_0'], err_15['arr_1']
+    
+    cutoff_index_3 = load_scotty_data("\\Output\\scotty_output_freq72.5_pol-3.0_rev.h5").analysis.cutoff_index.values
+    cutoff_index_7 = load_scotty_data("\\Output\\scotty_output_freq72.5_pol-7.0_rev.h5").analysis.cutoff_index.values
+    cutoff_index_15 = load_scotty_data("\\Output\\scotty_output_freq72.5_pol-15.0_rev.h5").analysis.cutoff_index.values
+    tau_vals = np.arange(0,1002, 1, dtype=int)
+    plt.scatter(tau_vals, err_3_beam, s=1, c='orange', marker=',', label=r"$3^\circ$")
+    plt.scatter(tau_vals[cutoff_index_3], err_3_beam[cutoff_index_3], s=50, c='black', marker='*')
+    plt.scatter(tau_vals, err_7_beam, s=1, c='red', marker=',', label=r"$7^\circ$")
+    plt.scatter(tau_vals[cutoff_index_7], err_7_beam[cutoff_index_7], s=50, c='black', marker='*')
+    plt.scatter(tau_vals, err_15_beam, s=1, c='blue', marker=',', label=r"$15^\circ$")
+    plt.scatter(tau_vals[cutoff_index_15], err_15_beam[cutoff_index_15], s=50, c='black', marker='*')
+    plt.ylabel("Relative error")
+    plt.xlabel(r"Beam parameter $\tau$")
+    plt.title(r"Relative error of modE along central ray vs $\tau$")
+    plt.ylim(0, 1)
+    plt.legend()
+    plt.show()
+    
+    plt.scatter(tau_vals, err_3_width, s=1, c='orange', marker=',', label=r"$3^\circ$")
+    plt.scatter(tau_vals[cutoff_index_3], err_3_width[cutoff_index_3], s=50, c='black', marker='*')
+    plt.scatter(tau_vals, err_7_width, s=1, c='red', marker=',', label=r"$7^\circ$")
+    plt.scatter(tau_vals[cutoff_index_7], err_7_width[cutoff_index_7], s=50, c='black', marker='*')
+    plt.scatter(tau_vals, err_15_width, s=1, c='blue', marker=',', label=r"$15^\circ$")
+    plt.scatter(tau_vals[cutoff_index_15], err_15_width[cutoff_index_15], s=50, c='black', marker='*')
+    plt.ylabel("Relative error")
+    plt.xlabel(r"Beam parameter $\tau$")
+    plt.title(r"Relative error of beam width vs $\tau$")
+    plt.ylim(0, 1)
+    plt.legend()
+    plt.show()
     #"""
