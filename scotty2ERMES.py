@@ -284,7 +284,7 @@ def get_pol_from_smits(k_vec: np.array, B_entry_vec_XYZ: np.array, B_entry_vec_R
     
     
 
-    return rho_hat_perp, mod_E_rho, mod_E_eta, np.column_stack((theta_rho*180/pi, rho_hat_rotated))
+    return rho_hat_perp, mod_E_rho, mod_E_eta, np.column_stack((theta_rho*180/pi, rho_hat_rotated)), rho_hat_rotated
 
 def get_limits_from_scotty(dt: datatree, padding: float = 0.01):
     """
@@ -649,7 +649,7 @@ def get_ERMES_parameters(
     else: ellip_pol_vec = np.array([0, 0, 0])
     
     # Polarization from Smits
-    rho_hat_perp, mod_E_par, mod_E_perp, rho_hat_rotated_set = get_pol_from_smits(k_vec, B_entry_vec_XYZ, B_entry_vec_RtZ, launch_freq_GHz, E0)
+    rho_hat_perp, mod_E_par, mod_E_perp, rho_hat_rotated_set, rho_hat_rotated = get_pol_from_smits(k_vec, B_entry_vec_XYZ, B_entry_vec_RtZ, launch_freq_GHz, E0)
 
     # Arrays for saving
     # Surely there is a neater way of doing this, but I'm lazy and want to get this working first before making it pretty
@@ -716,15 +716,9 @@ def get_ERMES_parameters(
         launch_beam_wavelength, 
         kx_norm, 
         ky_norm, 
-        lin_pol_vec[0],
-        lin_pol_vec[1],
-        lin_pol_vec[2],
-        ellip_pol_vec[0],
-        ellip_pol_vec[1],
-        ellip_pol_vec[2],
-        rho_hat_perp[0],
-        rho_hat_perp[1],
-        rho_hat_perp[2],
+        rho_hat_rotated[0],
+        rho_hat_rotated[1],
+        rho_hat_rotated[2],
         E0, 
         mod_E_par,
         mod_E_perp,
@@ -743,15 +737,9 @@ def get_ERMES_parameters(
         'Beam Wavelength (m)    ', 
         'kx (normalized)    ', 
         'ky (normalized)    ', 
-        'Linear polx (normalized)    ', 
-        'Linear poly (normalized)    ', 
-        'Linear polz (normalized)    ', 
-        'Ellipitcal polx (normalized)    ', 
-        'Ellipitcal poly (normalized)    ', 
-        'Ellipitcal polz (normalized)    ', 
-        'Smits polx (normalized)    ',
-        'Smits poly (normalized)    ',
-        'Smits polz (normalized)    ',
+        'polx (normalized)    ', 
+        'poly (normalized)    ', 
+        'polz (normalized)    ', 
         'E0    ', 
         'E par (ERMES)    ',
         'E perp (ERMES)    ',  
