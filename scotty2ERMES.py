@@ -269,20 +269,6 @@ def get_pol_from_smits(k_vec: np.array, B_entry_vec_XYZ: np.array, B_entry_vec_R
     # Check if rho perp k and perp b
     print("rho dot k: ", np.dot(rho_hat_rotated,k_vec_hat))
     print("rho dot b: ", np.dot(rho_hat_rotated,B_entry_vec_XYZ_hat))
-    
-    #Kx = (2j*cos(theta)) / (C*sin(theta)**2 + sqrt(C**2 * sin(theta)**4 + 4*cos(theta)**2))
-    #Ko = (2j*cos(theta)) / (C*sin(theta)**2 - sqrt(C**2 * sin(theta)**4 + 4*cos(theta)**2))
-    #Ex = (1/(Ko-Kx)) * np.array([Ko*mod_E_rho - mod_E_eta, mod_E_rho - Kx*mod_E_eta])
-    #Eo = (1/(Ko-Kx)) * np.array([-Kx*mod_E_rho + mod_E_eta, -mod_E_rho + Ko*mod_E_eta])
-    #Xfract = np.linalg.norm(Ex)**2 / (np.linalg.norm(Eo)**2 + np.linalg.norm(Ex)**2)
-    #print('Xfract: ', Xfract)
-    #print(mod_E_eta)
-    #print(mod_E_rho)
-    
-    # Keep as RHC (thetarho = 0, thetatea = -90)
-    # Polairzation tilt from [5]
-    
-    
 
     return rho_hat_perp, mod_E_rho, mod_E_eta, np.column_stack((theta_rho*180/pi, rho_hat_rotated)), rho_hat_rotated
 
