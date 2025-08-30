@@ -22,7 +22,7 @@ References
 
 Written by Dylan James Mc Kaige
 Created: 16/5/2025
-Updated: 9/8/2025
+Updated: 31/8/2025
 """
 import os, json, datatree
 import numpy as np
@@ -30,14 +30,14 @@ import pandas as pd
 from tqdm import tqdm
 from math import sin, cos, tan, acos, atan, sqrt, fabs
 from scipy.constants import c, pi, m_e, m_p, elementary_charge, epsilon_0
-from scipy.interpolate import RectBivariateSpline, UnivariateSpline, griddata, CubicSpline
+from scipy.interpolate import RectBivariateSpline, UnivariateSpline, griddata
 from scipy.integrate import cumulative_trapezoid
 from scipy.spatial import cKDTree
 from scipy.optimize import curve_fit
 from matplotlib import pyplot as plt
 from matplotlib.widgets import Slider
 from scotty.analysis import beam_width
-from scotty.plotting import plot_poloidal_crosssection, plot_toroidal_contour, maybe_make_axis
+from scotty.plotting import plot_poloidal_crosssection
 
 def handle_scotty_launch_angle_sign(dt: datatree):
     """
