@@ -1,10 +1,11 @@
 """
 Convert Scotty parameters to ERMES parameters and generate the coords of all points for ERMES. 
-Transposes ne data to R,Z coords as well
 
 The shape of the domain here is specifically for DBS simulations.
 
-Spits out .txt and .csv files of all the necessary data. 
+To use this, from Scotty results, decide on the distance_to_ERMES_port variable (distance from launcher to launch boundary in ERMES). The rest is automatic
+
+Spits out .txt of all the necessary data. 
 
 All paths are w.r.t CWD
 
