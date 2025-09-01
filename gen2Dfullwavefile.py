@@ -64,7 +64,7 @@ Psi = pol_flux_spline.ev(Rnod, Znod)
 Br = Br_spline.ev(Rnod, Znod)
 Bt = Bt_spline.ev(Rnod, Znod)
 Bz = Bz_spline.ev(Rnod, Znod)
-ne = ne_spline( )
+ne = ne_spline(Psi)
 
 # No cylindrical conversion needed
 Bx = Br
