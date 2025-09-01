@@ -702,9 +702,9 @@ def get_ERMES_parameters(
         launch_beam_wavelength, 
         kx_norm, 
         ky_norm, 
-        rho_hat_rotated[0],
-        rho_hat_rotated[1],
-        rho_hat_rotated[2],
+        rho_hat_rotated[0][0],
+        rho_hat_rotated[0][1],
+        rho_hat_rotated[0][2],
         E0, 
         mod_E_par,
         mod_E_perp,
@@ -738,8 +738,8 @@ def get_ERMES_parameters(
         # There's probably a better way to do this 
         with open(path + filename + 'ERMES_params', 'a') as file:
             np.savetxt(file, np.array([params_names, params_val], dtype=object).T, delimiter=' ', header='Beam Params', fmt = '%s')
-        with open(path + filename + 'ERMES_params', 'a') as file:
-            np.savetxt(file, np.round(rho_hat_rotated_set, 1), header='Rotated Polarization Vector', fmt = '%s')
+        #with open(path + filename + 'ERMES_params', 'a') as file:
+        #    np.savetxt(file, np.round(rho_hat_rotated_set, 1), header='Rotated Polarization Vector', fmt = '%s')
 
     if plot:
         plt.scatter(points_x, points_y, s = 2)
@@ -1463,10 +1463,10 @@ if __name__ == '__main__':
     #"""
     
     #DIII-D
-    """
+    #"""
     get_ERMES_parameters(
         dt=load_scotty_data('\\Output\\scotty_output_freq72.5_pol-7.0_rev.h5'),
-        suffix="DIII-D_",
+        suffix="DIII-D_NEW_",
         launch_angle=7.0, 
         launch_freq_GHz=72.5, 
         port_width=0.01, 
