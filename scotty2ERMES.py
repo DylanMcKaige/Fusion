@@ -298,19 +298,6 @@ def get_limits_from_scotty(dt: datatree, padding_R: float = 0.03, padding_Z: flo
     
     return np.array([min_x, max_x, min_y, max_y, min_z, max_z])
 
-def get_exit_vector_from_scotty(dt: datatree):
-    """
-    Get the exit vector in (R,t,Z) basis 
-
-    Args:
-        dt (datatree): Scotty output file in .h5 format
-
-    Returns:
-        k_exit: exit k-vector
-    """
-    k_exit = None
-    return None
-
 # TO BE DEPRECATED
 def process_scotty_input_data(
     ne_path: str,
