@@ -272,7 +272,7 @@ def get_pol_from_smits(k_vec: np.array, B_entry_vec_XYZ: np.array, B_entry_vec_R
 
     return rho_hat_perp, mod_E_rho, mod_E_eta, np.column_stack((theta_rho*180/pi, rho_hat_rotated)), rho_hat_rotated
 
-def get_limits_from_scotty(dt: datatree, padding: float = 0.01):
+def get_limits_from_scotty(dt: datatree, padding_R: float = 0.03, padding_Z: float = 0.01, padding_t: float = 0.01):
     """
     Get the min and max R, Z, t from Scotty by adding padding to tor and pol width
 
@@ -292,11 +292,24 @@ def get_limits_from_scotty(dt: datatree, padding: float = 0.01):
     combined_beam_Z = np.concatenate([beam_plus_pol.sel(col="Z"), beam_minus_pol.sel(col="Z")])
 
     # In GiD frame, accounting for sign 
-    min_x, max_x = np.sign(np.min(combined_beam_R))*(abs(np.min(combined_beam_R)) + padding), np.sign(np.max(combined_beam_R))*(abs(np.max(combined_beam_R)) + padding)
-    min_y, max_y = np.sign(np.min(combined_beam_Z))*(abs(np.min(combined_beam_Z)) + padding), np.sign(np.max(combined_beam_Z))*(abs(np.max(combined_beam_Z)) + padding)
-    min_z, max_z = np.sign(np.min(combined_beam_Y))*(abs(np.min(combined_beam_Y)) + padding), np.sign(np.max(combined_beam_Y))*(abs(np.max(combined_beam_Y)) + padding) # min_z would be negative so it points into the page
+    min_x, max_x = (np.min(combined_beam_R) - padding_R), (np.max(combined_beam_R) + padding_R)
+    min_y, max_y = np.sign(np.min(combined_beam_Z))*(abs(np.min(combined_beam_Z)) + padding_Z), np.sign(np.max(combined_beam_Z))*(abs(np.max(combined_beam_Z)) + padding_Z)
+    min_z, max_z = np.sign(np.min(combined_beam_Y))*(abs(np.min(combined_beam_Y)) + padding_t), np.sign(np.max(combined_beam_Y))*(abs(np.max(combined_beam_Y)) + padding_t) # min_z would be negative so it points into the page
     
     return np.array([min_x, max_x, min_y, max_y, min_z, max_z])
+
+def get_exit_vector_from_scotty(dt: datatree):
+    """
+    Get the exit vector in (R,t,Z) basis 
+
+    Args:
+        dt (datatree): Scotty output file in .h5 format
+
+    Returns:
+        k_exit: exit k-vector
+    """
+    k_exit = None
+    return None
 
 # TO BE DEPRECATED
 def process_scotty_input_data(
@@ -550,77 +563,22 @@ def get_ERMES_parameters(
     E0 = sqrt(z0*2*1/(w0*sqrt(pi/2))) # For P_in = 1 W/m in 2D
     
     # Port calculations
-    xp, yp = launch_R - dist_to_ERMES_port*cos(launch_angle_rad), launch_Z + dist_to_ERMES_port*sin(launch_angle_rad) # Centre of front face
+    xp, yp = launch_R - dist_to_ERMES_port*cos(launch_angle_rad), launch_Z + dist_to_ERMES_port*sin(launch_angle_rad) # Centre of front face, yp needs to be lower
     xp0, yp0 = xp - w_ERMES/2*sin(launch_angle_rad), yp - w_ERMES/2*cos(launch_angle_rad) # Bottom
     xp1, yp1 = xp + w_ERMES/2*sin(launch_angle_rad), yp + w_ERMES/2*cos(launch_angle_rad) # Top
     
-    # Domain calculations
-    min_x, max_x, min_y, max_y, min_z, max_z = get_limits_from_scotty(dt, padding = 0.02)
-    # Bottom right (closest to port) first
-    x_br, y_br = xp0, min(yp0, min_y)
-    x_bl, y_bl = min_x, y_br
-    x_tl, y_tl = min_x, max_y
-    x_tr, y_tr = xp1, max_y
-    port_delta_z = w_ERMES/2
-        
-    # To be deprecated once I test a bit more to confirm things work
-    """
-    # For COMSOL
-    xp01, yp01 = xp0 + port_width*cos(launch_angle_rad), yp0 - port_width*sin(launch_angle_rad)
-    xp11, yp11 = xp1 + port_width*cos(launch_angle_rad), yp1 - port_width*sin(launch_angle_rad)
+    # Slightly wider to minimize numerical errors at boundary of port
+    xp0_ext, yp0_ext = xp - w_ERMES*1.1/2*sin(launch_angle_rad), yp - w_ERMES*1.1/2*cos(launch_angle_rad) # Bottom
+    xp1_ext, yp1_ext = xp + w_ERMES*1.1/2*sin(launch_angle_rad), yp + w_ERMES*1.1/2*cos(launch_angle_rad) # Top
     
     # Domain calculations
-    # Lazy fix for -ve Launch Angles
-    if np.sign(launch_angle) == 1:
-        # Arbitrary padding for plotting in Scotty
-        xd1, yd0 = xp11 + 0.005, yp01 - 0.005 
-        xd0, yd1 = xd1-domain_size, yd0+domain_size
-        
-        # More slimmed down with an initial guess, within bounds of original domain so no new ne or B need to be calculated. 4 sided figure with xpyp being bottom right, then go clockwise.
-        trimmed_xd0 = xd0
-        trimmed_yd0 = yp0 + (xp0-trimmed_xd0)*tan(launch_angle_rad)
-        trimmed_xd2 = xp1
-        trimmed_yd2 = yd1
-        trimmed_yd1 = trimmed_yd2
-        trimmed_xd1 = trimmed_xd0 + (trimmed_yd1 - trimmed_yd0)*tan(launch_angle_rad)
-        trimmed_xd3 = trimmed_xd2
-        trimmed_yd3 = trimmed_yd1 - (trimmed_xd2 - trimmed_xd1)*tan(launch_angle_rad)
-        
-        ERMES_Z=(yd0, yd1)
-    else:
-        # Arbitrary padding for plotting in Scotty
-        xd1, yd0 = xp01 + 0.005, yp11 + 0.005 
-        xd0, yd1 = xd1-domain_size, yd0-domain_size 
-        
-        # More slimmed down with an initial guess, within bounds of original domain so no new ne or B need to be calculated. 4 sided figure with xpyp being bottom right, then go clockwise.
-        trimmed_xd0 = xd0
-        trimmed_yd0 = yp0 - (xp0-trimmed_xd0)*tan(launch_angle_rad)
-        trimmed_xd2 = xp0
-        trimmed_yd2 = yd1
-        trimmed_yd1 = trimmed_yd2
-        trimmed_xd1 = trimmed_xd0 + (trimmed_yd1 - trimmed_yd0)*tan(launch_angle_rad)
-        trimmed_xd3 = trimmed_xd2
-        trimmed_yd3 = trimmed_yd1 - (trimmed_xd2 - trimmed_xd1)*tan(launch_angle_rad)
-        
-        ERMES_Z=(yd1, yd0)
-    """
-    # To be deprecated
-    # Convert Scotty input files into RZ format (& Do some sanity plots)
-    #entry_point, B_entry_vec_RtZ, psi_normal_at_entry = process_scotty_input_data(
-    #    ne_path, 
-    #    topfile_path, 
-    #    filename = filename,
-    #    plot=plot,
-    #    save=save,
-    #    dt=dt,
-    #    ERMES_R=(xd0, xd1), 
-    #    ERMES_Z=ERMES_Z, 
-    #    ERMES_port=([xp0, yp0], [xp1, yp1], [xp01, yp01], [xp11, yp11]), 
-    #    ERMES_launch_centre=(xp, yp), 
-    #    launch_angle_rad=launch_angle_rad,
-    #    num_RZ=num_RZ,
-    #    save_path=path
-    #    )
+    min_x, max_x, min_y, max_y, min_z, max_z = get_limits_from_scotty(dt)
+    # Bottom right (closest to port) first
+    x_br, y_br = xp0_ext, yp0_ext
+    x_bl, y_bl = min_x, y_br
+    x_tl, y_tl = min_x, max_y
+    x_tr, y_tr = xp1_ext, max_y
+    port_delta_z = w_ERMES/2
     
     entry_point = [dt.inputs.initial_position.values[0], dt.inputs.initial_position.values[2]]
     B_entry_vec_RtZ = np.array([dt.analysis.B_R.values[0], dt.analysis.B_T.values[0], dt.analysis.B_Z.values[0]])
@@ -643,6 +601,8 @@ def get_ERMES_parameters(
         xp, 
         xp0, 
         xp1, 
+        xp0_ext,
+        xp1_ext,
         x_br,
         x_bl,
         x_tr,
@@ -659,6 +619,8 @@ def get_ERMES_parameters(
         yp, 
         yp0, 
         yp1, 
+        yp0_ext,
+        yp1_ext,
         y_br,
         y_bl,
         y_tr,
@@ -675,6 +637,8 @@ def get_ERMES_parameters(
         'Source Position (front face of port)    ', 
         'Port BL    ', 
         'Port TL    ', 
+        'Port Padding BL    ',
+        'Port Padding BR    ',
         'Domain BR    ',
         'Domain BL    ',
         'Domain TR    ',
