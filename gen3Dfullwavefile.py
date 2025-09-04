@@ -1,20 +1,21 @@
 """
 Generate fullwave .dat files for ERMES in 3D from ne.dat and topfile.json
 """
-import os, json, re
+import json, re
 import pandas as pd
 import numpy as np
 from scipy.interpolate import UnivariateSpline, RectBivariateSpline
 from math import *
 
-cwd = os.getcwd()
+ne_data_path = 'YOUR_PATH_HERE' # ne.dat 
+topfile_data_path = 'YOUR_PATH_HERE' # topfile in json format
+msh_path = 'YOUR_PATH_HERE' # Inside .gid problem folder
 
-ne_file = pd.read_csv(cwd + "/source_data/ne_189998_3000ms_quinn.dat", sep=' ', header=None, skiprows=1)
-with open(cwd + "/source_data/topfile_189998_3000ms_quinn.json", 'r') as file: topfile_data = json.load(file)
-msh_path = cwd + "/7_degree_3d-1.dat"
+ne_file = pd.read_csv(ne_data_path, sep=' ', header=None, skiprows=1) 
+with open(topfile_data_path, 'r') as file: topfile_data = json.load(file) 
 
 ne_data = ne_file.to_numpy(dtype=float).T  
-ne_spline = UnivariateSpline(ne_data[0]**2, ne_data[1], s=0, ext=1)
+ne_spline = UnivariateSpline(ne_data[0]**2, ne_data[1], k=5, s=0, ext=1)
 
 # Load cross-section fields (R,Z grids and 2D arrays)
 A = {k: np.array(v) for k, v in topfile_data.items()}
@@ -27,10 +28,10 @@ BtRZ = np.asarray(A['Bt'])
 BzRZ = np.asarray(A['Bz'])
 
 # Build splines on the cross-section
-pol_flux_spline = RectBivariateSpline(Rg, Zg, PsiRZ.T, kx=3, ky=3, s=0)
-Br_spline = RectBivariateSpline(Rg, Zg, BrRZ.T,  kx=3, ky=3, s=0)
-Bt_spline = RectBivariateSpline(Rg, Zg, BtRZ.T,  kx=3, ky=3, s=0)
-Bz_spline = RectBivariateSpline(Rg, Zg, BzRZ.T,  kx=3, ky=3, s=0)
+pol_flux_spline = RectBivariateSpline(Rg, Zg, PsiRZ.T, kx=5, ky=5, s=0)
+Br_spline = RectBivariateSpline(Rg, Zg, BrRZ.T,  kx=5, ky=5, s=0)
+Bt_spline = RectBivariateSpline(Rg, Zg, BtRZ.T,  kx=5, ky=5, s=0)
+Bz_spline = RectBivariateSpline(Rg, Zg, BzRZ.T,  kx=5, ky=5, s=0)
 
 # Parse GiD mesh nodes:  No[ID] = p(x,y,z);
 node_ids, xs, ys, zs = [], [], [], []
@@ -90,7 +91,5 @@ np.savetxt(
     fmt=["%d", "%.8e", "%.8e", "%.8e"]
 )
 
-# (Optional) quick sanity prints
-print("psi(grid) range:", float(np.nanmin(PsiRZ)), float(np.nanmax(PsiRZ)))
-print("psi(nodes) range:", float(np.nanmin(Psi)), float(np.nanmax(Psi)))
+# Sanity print
 print(f"Wrote {nid_sorted.size} nodes to ne.dat and mag.dat")
