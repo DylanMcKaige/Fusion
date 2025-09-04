@@ -88,5 +88,5 @@ np.savetxt(
     fmt=["%d", "%.8e", "%.8e", "%.8e"]
 )
 
-# Quick sanity print
+# Sanity print
 print(f"Wrote {nid_sorted.size} nodes to ne.dat and mag.dat")
