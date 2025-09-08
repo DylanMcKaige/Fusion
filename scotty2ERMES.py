@@ -22,7 +22,7 @@ References
 
 Written by Dylan James Mc Kaige
 Created: 16/5/2025
-Updated: 31/8/2025
+Updated: 8/9/2025
 """
 import os, json, datatree
 import numpy as np
@@ -293,183 +293,10 @@ def get_limits_from_scotty(dt: datatree, padding_R: float = 0.03, padding_Z: flo
 
     # In GiD frame, accounting for sign 
     min_x, max_x = (np.min(combined_beam_R) - padding_R), (np.max(combined_beam_R) + padding_R)
-    min_y, max_y = np.sign(np.min(combined_beam_Z))*(abs(np.min(combined_beam_Z)) + padding_Z), np.sign(np.max(combined_beam_Z))*(abs(np.max(combined_beam_Z)) + padding_Z)
-    min_z, max_z = np.sign(np.min(combined_beam_Y))*(abs(np.min(combined_beam_Y)) + padding_t), np.sign(np.max(combined_beam_Y))*(abs(np.max(combined_beam_Y)) + padding_t) # min_z would be negative so it points into the page
+    min_y, max_y = (np.min(combined_beam_Z) - padding_Z), (np.max(combined_beam_Z) + padding_Z)
+    min_z, max_z = (np.min(combined_beam_Y) - padding_t), (np.max(combined_beam_Y) + padding_t) # min_z would be negative so it points into the page
     
     return np.array([min_x, max_x, min_y, max_y, min_z, max_z])
-
-# TO BE DEPRECATED
-def process_scotty_input_data(
-    ne_path: str,
-    topfile_path: str,
-    filename: str,
-    dt: datatree.DataTree = None,
-    plot: bool = True,
-    save: bool = True,
-    path: str = os.getcwd() + '\\',
-    save_path: str = os.getcwd() + '\\',
-    ERMES_R = None,
-    ERMES_Z = None,
-    ERMES_port = None,
-    ERMES_launch_centre = None,
-    launch_angle_rad = None,
-    num_RZ = 100
-    ):
-    """
-    Loads ne and topfile data from the given .dat and .json files and saves ne, Br, Bt, Bz as a function of R & Z in a .csv file. Also plots for sanity check against Scotty
-
-    Args:
-        ne_path (str): Relative (to cwd) paht of ne.dat file
-        topfile_path (str): Relative (to cwd) path of topfile.json file
-        filename (str): Filename for saving
-        dt (DataTree): Scotty output file in .h5 format
-        plot (bool): Plot the data
-        save (bool): Save the data
-        path (str): Path to save file in, defaults to cwd
-        ERMES_R (tuple): Range of R to zoom in and save ne of defaults to full range from topfile
-        ERMES_Z (tuple): Range of Z to zoom in and save ne of defaults to full range from topfile
-        ERMES_port (tuple): Coordinates of port to check if it is within the plasma 
-        ERMES_launch_centre (tuple): Coordinates of centre of launch point in ERMES
-        launch_angle_rad (float): Launch angle in rad w.r.t -ve R axis
-        num_RZ (int): Number of RZ points for ERMES
-        
-    Returns:
-        entry_point (array): Coordinates of point of entry defined by intersection of the last closed flux surface and the initial launch beam
-        B_entry_vec_RtZ (array): B field at entry point of beam into plasma
-        Plots ne in R,Z space w.r.t pol flux and saves a .csv files of ne, R, Z, Br, Bt, Bz for ERMES (Need to be converted using fullwavedensfile.py & fullwavemagfile.py)
-    """
-    
-    # Load in ne data and spline it
-    ne_path = path + ne_path
-    df = pd.read_csv(ne_path, sep=' ', header=None, skiprows=1)
-    ne_data = df.to_numpy(dtype=float).T
-    ne_spline = UnivariateSpline(ne_data[0]**2, ne_data[1], s =  0, ext=1) # Squared cus input data is in sqrt(psi_p) convention following TORBEAM
-
-    # Load in topfile data and spline the flux
-    topfile_path = path + topfile_path
-    with open(topfile_path, 'r') as file:
-        topfile_data = json.load(file)
-    topfile_arrays = {key: np.array(value) for key, value in topfile_data.items()}
-    
-    R = np.asarray(topfile_arrays['R'])
-    Z = np.asarray(topfile_arrays['Z'])
-    Br = np.asarray(topfile_arrays['Br'])
-    Bt = np.asarray(topfile_arrays['Bt'])
-    Bz = np.asarray(topfile_arrays['Bz'])
-    pol_flux_RZ = np.asarray(topfile_arrays['pol_flux'])
-    
-    R_grid, Z_grid = np.meshgrid(R, Z)
-    pol_flux_spline = RectBivariateSpline(R, Z, pol_flux_RZ.T)
-    pol_flux_vals = pol_flux_spline.ev(R_grid, Z_grid)
-
-    ne_vals_total = ne_spline(pol_flux_vals)
-
-    # Save only the necessary range for ERMES
-    R_range = np.linspace(ERMES_R[0], ERMES_R[1], num_RZ)
-    Z_range = np.linspace(ERMES_Z[0], ERMES_Z[1], num_RZ)
-    R_grid_to_ERMES, Z_grid_to_ERMES = np.meshgrid(R_range, Z_range)
-
-    pol_flux_vals_to_ERMES = pol_flux_spline.ev(R_grid_to_ERMES, Z_grid_to_ERMES)
-    ne_vals_to_ERMES = ne_spline(pol_flux_vals_to_ERMES)
-
-    Br_spline = RectBivariateSpline(R, Z, Br.T)
-    Bt_spline = RectBivariateSpline(R, Z, Bt.T)
-    Bz_spline = RectBivariateSpline(R, Z, Bz.T)
-    
-    Br_vals_ERMES = Br_spline.ev(R_grid_to_ERMES, Z_grid_to_ERMES)
-    Bt_vals_ERMES = Bt_spline.ev(R_grid_to_ERMES, Z_grid_to_ERMES)
-    Bz_vals_ERMES = Bz_spline.ev(R_grid_to_ERMES, Z_grid_to_ERMES)
-    
-    # Get cut-offs and resonances
-    launch_freq_GHz = 72.5
-    w = 2*pi*launch_freq_GHz*1e9
-    w_ce = elementary_charge*np.sqrt(Br_vals_ERMES**2 + Bt_vals_ERMES**2 + Bz_vals_ERMES**2)/m_e # (Z,R)
-    w_pe = np.sqrt(ne_vals_to_ERMES*elementary_charge**2 / (epsilon_0*m_e)) # (Z,R)
-    
-    # assuming it's a H1 plasma
-    w_ci = elementary_charge*np.sqrt(Br_vals_ERMES**2 + Bt_vals_ERMES**2 + Bz_vals_ERMES**2)/m_p # (Z,R)
-    w_pi = np.sqrt(ne_vals_to_ERMES*elementary_charge**2 / (epsilon_0*m_p)) # (Z,R)
-    
-    w_UH = np.sqrt(w_pe**2 + w_ce**2) - w
-    w_LH = np.sqrt(w_ce**2 * w_pi**2 / (w_ce**2 + w_pe**2)) - w
-    
-    w_R = np.sqrt(w_pe**2 + w_pi**2 + (w_ci + w_ce)**2 / 4) - (w_ci - w_ce)/2 - w
-    
-    # Get the line from launcher to plasma then find the point where ne goes from 0 to +ve, this is the point of entry of the beam into the plasma
-    # Only used if no Scotty output file used
-    if dt is None:
-        entry_point = find_lcfs_entry_point(
-            pol_flux_spline,
-            R0=ERMES_launch_centre[0],
-            Z0=ERMES_launch_centre[1],
-            launch_angle_rad=launch_angle_rad,
-            psi_closed=ne_data[0,-1],
-            
-        )
-    else:
-        entry_point = [dt.inputs.initial_position.values[0], dt.inputs.initial_position.values[2]]
-    
-    psi_normal_at_entry = get_psi_normal_entry(pol_flux_spline, entry_point[0], entry_point[1]) # Not needed
-
-    B_entry_vec_RtZ = np.array([
-        Br_spline.ev(entry_point[0], entry_point[1]),
-        Bt_spline.ev(entry_point[0], entry_point[1]),
-        Bz_spline.ev(entry_point[0], entry_point[1])
-        ]
-    )
-    
-    RZ_ERMES = np.column_stack((R_range, Z_range))
-
-    if save:
-        np.savetxt(save_path + filename + "RZ_ERMES.csv", RZ_ERMES, delimiter=",", fmt="%.6e")
-
-        np.savetxt(save_path + filename + "Br_ERMES.csv", Br_vals_ERMES.T, delimiter=",", fmt="%.6e")
-        np.savetxt(save_path + filename + "Bz_ERMES.csv", Bz_vals_ERMES.T, delimiter=",", fmt="%.6e")
-        np.savetxt(save_path + filename + "Bt_ERMES.csv", Bt_vals_ERMES.T, delimiter=",", fmt="%.6e")
-
-        np.savetxt(save_path + filename + "ne_ERMES.csv", ne_vals_to_ERMES.T, delimiter=",", fmt="%.6e")
-    
-    if plot:
-        w_levels = [0]#np.linspace(-0.01*w, 0.01, 10, endpoint=True)
-        
-        plt.figure(figsize=(8, 6))
-
-        cf = plt.contourf(R_grid, Z_grid, ne_vals_total*1e19, levels=100, cmap='plasma')
-        pol_flux_levels = np.linspace(0.0, 1.0, 11)
-        cs = plt.contour(R_grid, Z_grid, pol_flux_vals, levels=pol_flux_levels, colors='black', linewidths=0.8)
-        
-        plt.clabel(cs, fmt=r'%.1f', fontsize=8, colors='black')
-        plt.colorbar(cf, label=r'$n_e\ (10^{19}\ \mathrm{m}^{-3})$')
-        plt.xlabel("R [m]")
-        plt.ylabel("Z [m]")
-        plt.title(r'Heatmap of $n_e(R,Z)$')
-        plt.axis('equal')
-        plt.tight_layout()
-        plt.show()
-        
-        cf = plt.contourf(R_grid_to_ERMES, Z_grid_to_ERMES, ne_vals_to_ERMES*1e19, levels=100, cmap='plasma')
-        pol_flux_levels = np.linspace(0.0, 1.0, 11)
-        cs = plt.contour(R_grid_to_ERMES, Z_grid_to_ERMES, pol_flux_vals_to_ERMES, levels=pol_flux_levels, colors='black', linewidths=0.8)
-        #plt.contour(R_grid_to_ERMES, Z_grid_to_ERMES, w_R, levels = w_levels, colors='white', linewidths=2)
-        #plt.contour(R_grid_to_ERMES, Z_grid_to_ERMES, w_UH, levels = w_levels, colors='blue', linewidths=2)
-        #plt.contour(R_grid_to_ERMES, Z_grid_to_ERMES, w_LH, levels = w_levels, colors='green', linewidths=2)
-        plt.clabel(cs, fmt=r'%.1f', fontsize=8, colors='black')
-        plt.scatter(*zip(*ERMES_port), s = 2, color='white')
-        plt.scatter(*zip(entry_point), s = 2, color='white')
-
-        plt.colorbar(cf, label=r'$n_e\ (10^{19}\ \mathrm{m}^{-3})$')
-        plt.xlabel("R [m]")
-        plt.ylabel("Z [m]")
-        plt.xlim(ERMES_R[0], ERMES_R[1])
-        plt.ylim(ERMES_Z[0], ERMES_Z[1])
-        plt.title(r'Heatmap of $n_e(R,Z)$')
-        
-        ax = plt.gca()
-        ax.use_sticky_edges = True
-        ax.set_aspect('equal')
-        plt.show()
-        
-    return entry_point, B_entry_vec_RtZ, psi_normal_at_entry
 
 def get_ERMES_parameters(
     dt: datatree.DataTree = None,
@@ -573,11 +400,6 @@ def get_ERMES_parameters(
     
     # linear pol vec at launch point = beam k X B field at launch point in (X,Y,Z)
     k_vec = np.array([kx_norm, ky_norm, 0])
-    lin_pol_vec = np.cross(k_vec, B_entry_vec_XYZ)
-    
-    # Elliptical pol vector from Scotty
-    if dt is not None: ellip_pol_vec = get_pol_from_scotty(dt)
-    else: ellip_pol_vec = np.array([0, 0, 0])
     
     # Polarization from Smits
     rho_hat_perp, mod_E_par, mod_E_perp, rho_hat_rotated_set, rho_hat_rotated = get_pol_from_smits(k_vec, B_entry_vec_XYZ, B_entry_vec_RtZ, launch_freq_GHz, E0)
@@ -625,7 +447,7 @@ def get_ERMES_parameters(
         'Port BL    ', 
         'Port TL    ', 
         'Port Padding BL    ',
-        'Port Padding BR    ',
+        'Port Padding TL    ',
         'Domain BR    ',
         'Domain BL    ',
         'Domain TR    ',
@@ -1360,7 +1182,7 @@ def ERMES_results_to_plots(res: str = None, msh: str = None, dt: datatree = None
         ax1.plot(distance_along_beam, np.linalg.norm(width.values, axis = 1), label="Scotty width", color='orange')
         ax1.plot(distance_along_beam, np.array(fitted_widths), label="Fitted ERMES width", color='red')
         smoothed_width_list = get_moving_RMS(fitted_widths, 40)
-        ax1.plot(distance_along_beam, smoothed_width_list, 'g-', label="Smoothed Fitted ERMES width")
+        #ax1.plot(distance_along_beam, smoothed_width_list, 'g-', label="Smoothed Fitted ERMES width")
         ax1.vlines(distance_along_beam[tau_cutoff], ymin=ax1.get_ylim()[0], ymax = ax1.get_ylim()[1], linestyles='dashed', color='blue')
         ax1.set_ylabel("Width (m)")
         ax1.set_title("Beam widths")
@@ -1404,7 +1226,7 @@ if __name__ == '__main__':
         launch_angle=7.0, 
         launch_freq_GHz=40, 
         port_width=0.01, 
-        #launch_positon=[2.278,0,-0.01], 
+        #launch_positon=[2.278,0,-0.01], 0
         #launch_beam_curvature=-0.7497156475519201, 
         #launch_beam_width=0.07596928872724663, 
         dist_to_ERMES_port=0.85, 
@@ -1445,8 +1267,8 @@ if __name__ == '__main__':
         #res="\\ERMES_output_files\\MAST-U_7_degree_40_EDG2.post.res", 
         #msh="\\ERMES_output_files\\MAST-U_7_degree_40_EDG2.post.msh",
         #dt=load_scotty_data('\\MAST-U\\scotty_output_freq40.0_pol-7.0_rev.h5'),
-        res="\\ERMES_output_files\\DIII-D_7_degree_72_5_EDG2_no_damping_morene.post.res", 
-        msh="\\ERMES_output_files\\DIII-D_7_degree_72_5_EDG2_no_damping_morene.post.msh",
+        res="\\ERMES_output_files\\DIII-D_7_degree_new_method_72_5_8e-4.post.res", 
+        msh="\\ERMES_output_files\\DIII-D_7_degree_new_method_72_5_8e-4.post.msh",
         dt=load_scotty_data('\\Output\\scotty_output_freq72.5_pol-7.0_rev.h5'),
         plot=True,
         grid_resolution=8e-4,
