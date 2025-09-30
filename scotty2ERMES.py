@@ -24,7 +24,7 @@ References
 
 Written by Dylan James Mc Kaige
 Created: 16/5/2025
-Updated: 8/9/2025
+Updated: 29/9/2025
 """
 import os, json, datatree
 import numpy as np
@@ -1309,6 +1309,48 @@ def ERMES_results_to_plots(res: str = None, msh: str = None, dt: datatree = None
         plt.title("Relative error between ERMES 20.0 and Scotty beam widths")
         plt.show()
         
+        # modE and Width together
+        # Start figure with 3 subplots, sharing x-axis
+        fig, (ax0, ax1, ax2) = plt.subplots(3, 1, figsize=(4, 10), sharex=True, height_ratios=[2, 2, 1])
+        plt.suptitle(r"Results for ERMES 20.0 & Scotty, $\theta_{launch}$="
+                  + f"{handle_scotty_launch_angle_sign(dt=dt):.1f}"
+                  + r"$^\circ$" 
+                  + f", f={dt.inputs.launch_freq_GHz.values}GHz")
+        # Plot modE vs tau
+        ax0.scatter(distance_along_beam, modE_list, marker='.', color = 'red', label='ERMES 20.0')
+        theoretical_modE_tau = calc_Eb_from_scotty(dt=dt, wx=dt.inputs.launch_beam_width.values, wy=dt.inputs.launch_beam_width.values, E0 = modE_list[0])
+        ax0.scatter(distance_along_beam, theoretical_modE_tau, marker='.', color = 'orange', label='Scotty')
+        smoothed_modE_list = get_moving_RMS(modE_list, 40)
+        #plt.plot(distance_along_beam, smoothed_modE_list, 'g-', label="Smoothed ERMES")
+        ax0.vlines(distance_along_beam[tau_cutoff], ymin=ax0.get_ylim()[0], ymax = ax0.get_ylim()[1], linestyles='dashed', color='blue')
+        ax0.set_ylabel("mod(E) (A.U.)")
+        ax0.set_title("mod(E) vs Distance along central ray")
+        ax0.set_ylim(bottom=0)
+        ax0.legend()
+
+        # Middle subplot: width
+        ax1.plot(distance_along_beam, np.linalg.norm(width.values, axis = 1), label="Scotty width", color='orange')
+        ax1.plot(distance_along_beam, np.array(fitted_widths), label="Fitted ERMES 20.0 width", color='red')
+        smoothed_width_list = get_moving_RMS(fitted_widths, 40)
+        #ax1.plot(distance_along_beam, smoothed_width_list, 'g-', label="Smoothed Fitted ERMES 20.0 width")
+        ax1.set_ylim(bottom = 0)
+        ax1.vlines(distance_along_beam[tau_cutoff], ymin=ax1.get_ylim()[0], ymax = ax1.get_ylim()[1], linestyles='dashed', color='blue')
+        
+        ax1.set_ylabel("Width (m)")
+        ax1.set_title("Beam widths")
+        #ax1.legend()
+
+        # Bottom subplot: chi**2
+        ax2.plot(distance_along_beam, chi2_list, label=r"$\chi^2$ of ERMES 20.0 fit", color='red')
+        ax2.vlines(distance_along_beam[tau_cutoff], ymin=ax2.get_ylim()[0], ymax = ax2.get_ylim()[1], linestyles='dashed', color='blue')
+        ax2.set_xlabel("Distance along central ray (m)")
+        ax2.set_ylabel(r"$\chi^2$")
+        ax2.set_ylim(bottom = 0)
+        #ax2.legend()
+        ax2.set_title(r"$\chi^2$ of ERMES 20.0 fit")
+        plt.xlim(left = 0, right = distance_along_beam[-1])
+        plt.show()
+        
         # Poynting flux
         plt.scatter(distance_along_beam, poynting_flux_per_tau, color = 'red', s = 15)
         print("P_X at exit: ", poynting_flux_per_tau[-1])
@@ -1342,7 +1384,7 @@ if __name__ == '__main__':
     #"""
     
     #DIII-D
-    #"""
+    """
     get_ERMES_parameters(
         dt=load_scotty_data('\\Output\\scotty_output_freq72.5_pol-7.0_rev.h5'),
         suffix="DIII-D_new_",
@@ -1392,7 +1434,7 @@ if __name__ == '__main__':
         dt=load_scotty_data('\\Output\\scotty_output_freq72.5_pol-7.0_rev.h5'),
         plot=True,
         grid_resolution=4e-4,
-        save=True,
+        save=False,
     )
     
     # _new => 72.5, 4e-4, RME1st unless stated otherwise
@@ -1446,20 +1488,21 @@ if __name__ == '__main__':
     err_beam_11 = err_11_beam[tau_11]
     err_beam_13 = err_13_beam[tau_13]
     err_beam_15 = err_15_beam[tau_15]
-    plt.plot([0, 1, 2], err_beam_3, color='orange', label=r"$3^\circ$", marker = 'x')
-    plt.plot([0, 1, 2], err_beam_5, color='purple', label=r"$5^\circ$", marker = 'x')
-    plt.plot([0, 1, 2], err_beam_7, color='red', label=r"$7^\circ$", marker = 'x')
-    plt.plot([0, 1, 2], err_beam_9, color='gray', label=r"$9^\circ$", marker = 'x')
-    plt.plot([0, 1, 2], err_beam_11, color='brown', label=r"$11^\circ$", marker = 'x')
-    plt.plot([0, 1, 2], err_beam_13, color='pink', label=r"$13^\circ$", marker = 'x')
-    plt.plot([0, 1, 2], err_beam_15, color='blue', label=r"$15^\circ$", marker = 'x')
-    plt.xticks([0, 1, 2], ['Entry', 'Cutoff', 'Exit'])
-    plt.ylabel("Relative error")
-    plt.xlabel(r"Beam parameter $\tau$")
-    plt.title(r"Relative error of modE along central ray vs $\tau$")
-    plt.ylim(bottom = 0)
-    plt.legend()
-    plt.show()
+    fig, (ax0, ax1) = plt.subplots(2, 1, figsize=(4, 8), sharex=True, height_ratios=[1,1])
+    ax0.plot([0, 1, 2], err_beam_3, color='orange', label=r"$3^\circ$", marker = 'x')
+    ax0.plot([0, 1, 2], err_beam_5, color='purple', label=r"$5^\circ$", marker = 'x')
+    ax0.plot([0, 1, 2], err_beam_7, color='red', label=r"$7^\circ$", marker = 'x')
+    ax0.plot([0, 1, 2], err_beam_9, color='gray', label=r"$9^\circ$", marker = 'x')
+    ax0.plot([0, 1, 2], err_beam_11, color='brown', label=r"$11^\circ$", marker = 'x')
+    ax0.plot([0, 1, 2], err_beam_13, color='pink', label=r"$13^\circ$", marker = 'x')
+    ax0.plot([0, 1, 2], err_beam_15, color='blue', label=r"$15^\circ$", marker = 'x')
+    #plt.xticks([0, 1, 2], ['Entry', 'Cutoff', 'Exit'])
+    ax0.set_ylabel("Relative error")
+    #plt.xlabel(r"Beam parameter $\tau$")
+    ax0.set_title(r"Relative error of modE along central ray vs $\tau$")
+    ax0.set_ylim(bottom = 0)
+    ax0.legend()
+    
     
     err_width_3 = err_3_width[tau_3]
     err_width_5 = err_5_width[tau_5]
@@ -1468,18 +1511,20 @@ if __name__ == '__main__':
     err_width_11 = err_11_width[tau_11]
     err_width_13 = err_13_width[tau_13]
     err_width_15 = err_15_width[tau_15]
-    plt.plot([0, 1, 2], err_width_3, color='orange', label=r"$3^\circ$", marker = 'x')
-    plt.plot([0, 1, 2], err_width_5, color='purple', label=r"$5^\circ$", marker = 'x')
-    plt.plot([0, 1, 2], err_width_7, color='red', label=r"$7^\circ$", marker = 'x')
-    plt.plot([0, 1, 2], err_width_9, color='gray', label=r"$9^\circ$", marker = 'x')
-    plt.plot([0, 1, 2], err_width_11, color='brown', label=r"$11^\circ$", marker = 'x')
-    plt.plot([0, 1, 2], err_width_13, color='pink', label=r"$13^\circ$", marker = 'x')
-    plt.plot([0, 1, 2], err_width_15, color='blue', label=r"$15^\circ$", marker = 'x')
-    plt.xticks([0, 1, 2], ['Entry', 'Cutoff', 'Exit'])
-    plt.xlabel(r"Beam parameter $\tau$")
-    plt.title(r"Relative error of beam width vs $\tau$")
-    plt.ylim(bottom = 0)
-    plt.legend()
+    ax1.plot([0, 1, 2], err_width_3, color='orange', label=r"$3^\circ$", marker = 'x')
+    ax1.plot([0, 1, 2], err_width_5, color='purple', label=r"$5^\circ$", marker = 'x')
+    ax1.plot([0, 1, 2], err_width_7, color='red', label=r"$7^\circ$", marker = 'x')
+    ax1.plot([0, 1, 2], err_width_9, color='gray', label=r"$9^\circ$", marker = 'x')
+    ax1.plot([0, 1, 2], err_width_11, color='brown', label=r"$11^\circ$", marker = 'x')
+    ax1.plot([0, 1, 2], err_width_13, color='pink', label=r"$13^\circ$", marker = 'x')
+    ax1.plot([0, 1, 2], err_width_15, color='blue', label=r"$15^\circ$", marker = 'x')
+    ax1.set_xticks([0, 1, 2], ['Entry', 'Cutoff', 'Exit'])
+    ax1.set_xlabel(r"Beam parameter $\tau$")
+    ax1.set_title(r"Relative error of beam width vs $\tau$")
+    ax1.set_ylabel("Relative error")
+    ax1.set_ylim(bottom = 0, top = 1)
+    ax1.legend()
+    plt.suptitle("Summarized Errors")
     plt.show()
     
     #"""
