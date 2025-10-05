@@ -24,7 +24,7 @@ References
 
 Written by Dylan James Mc Kaige
 Created: 16/5/2025
-Updated: 29/9/2025
+Updated: 5/10/2025
 """
 import os, json, datatree
 import numpy as np
@@ -173,6 +173,59 @@ def get_pol_from_scotty(dt: datatree.DataTree):
     
     return e_hat_XYZ
 
+def scotty_pol_to_ERMES(pol: np.array, k_vec: np.array, E0: float = 1.0):
+    """
+    Convert a complex polarisation vector from Scotty to a real poalrisation vector in ERMES.
+    
+    In ERMES, rho is the pol vector, delta is the wave vector, eta = delta x rho. For consistency with everywhere else, k is the wavevector
+    We define rho = real(pol) projected onto the plane defned by k (force rho to be perp to k) and find eta using eta = k x rho
+    We then project rho and eta onto pol to determine their ratio
+    We use the ratio to get E_rho and E_eta
+    phi_rho and phi_eta are determined from these projections
+    
+    This was a bit of divine inspiration that happens to work so far. VERY good agreement for lower angle cases WITHOUT forcing the projection. 
+    Seems to lose agreement as poloidal launch angle increases (why?, increase seems to be monotonic)
+
+    Args:
+        pol (np.array): Complex polarization vector from Scotty in x,y,z basis (ERMES basis)
+        E0 (float, optional): Magnitude of incident E field. Defaults to 1.0.
+        
+    Return:
+        E_perp (float): |E_perp|
+        phi_perp (float): Phase of E_perp
+        E_par (float): |E_par|
+        phi_par (float): Phase of E_par
+    """
+    v = np.asarray(pol, complex) # Force the type casting just in case
+    k = np.asarray(k_vec, float) # Force the type casting just in case
+    k = k/np.linalg.norm(k) # Normalize just in case
+    
+    # Define rho as real part of v projected onto plane perp to k
+    rho0 = np.real(v)
+    rho = rho0 - np.dot(rho0, k)*k
+    rho = rho/np.linalg.norm(rho)
+
+    # Build eta from k x rho
+    cross = np.cross(k, rho)
+    eta = cross/np.linalg.norm(cross)
+
+    # Projections of v onto basis, these are the complex scaling factors
+    a_rho = np.vdot(rho, v)
+    a_eta = np.vdot(eta, v)
+
+    E_rho = E0*a_rho
+    E_eta = E0*a_eta
+
+    # Results
+    E_par, phi_par = np.abs(E_rho), float(np.angle(E_rho))
+    E_perp, phi_perp = np.abs(E_eta), float(np.angle(E_eta))
+
+    # Check orthogonality
+    k_dot_rho = float(np.dot(k, rho))
+    print("k dot rho:", k_dot_rho)
+
+    return rho, E_perp, phi_perp, E_par, phi_par
+
 def rotate_rodrigues(a: np.array, b: np.array, theta) -> np.array:
     """
     Rotate vector a about b by an angle of theta using Rodrigues' formula
@@ -247,7 +300,7 @@ def get_pol_from_smits(k_vec: np.array, B_entry_vec_XYZ: np.array, B_entry_vec_R
     if mode == 0: gamma = atan(-2*cos(theta) / (C*(sin(theta)**2 + p_prime)) ) # Gamma from theta from [5] (best coupling)
     if mode == 1: gamma = atan( (C*(sin(theta)**2 - p_prime)) / 2*cos(theta) ) # Gamma from theta from [5] (best coupling)
     
-    # Get the rho unit vector that is perp to k and b. This is our initial & supposedly ideal pol ( It is not, seems to be ~20deg off )
+    # Get the rho unit vector that is perp to k and b. This is our initial & supposedly ideal pol
     rho_hat_perp = np.cross(k_vec_hat, B_entry_vec_XYZ_hat) 
 
     # Get Bp, Bt at entry
@@ -310,12 +363,25 @@ def get_limits_from_scotty(dt: datatree, padding_R: float = 0.03, padding_Z: flo
     """
     
     if cartesian_scotty:
-        min_x = dt.inputs.X[0]
-        max_x = dt.inputs.X[-1]
-        min_y = dt.inputs.Z[0] 
-        max_y = dt.inputs.Z[-1]
         min_z = dt.inputs.Y[0] # Cus in cartesian scotty, y is toroidal
         max_z = dt.inputs.Y[-1]
+        width_at_tau = dt.analysis.beam_width_2
+        beam_width_vector = dt.analysis.y_hat_cartesian*width_at_tau
+        
+        data_Yaxis = {
+            "q_X": np.array(dt.solver_output.q_X),
+            "q_Y": np.array(dt.solver_output.q_Y),
+            "q_Z": np.array(dt.solver_output.q_Z),
+        }
+        
+        beam_vector = np.column_stack([data_Yaxis["q_X"], data_Yaxis["q_Y"], data_Yaxis["q_Z"]])
+        beam_plus = beam_vector + beam_width_vector
+        beam_minus = beam_vector - beam_width_vector
+        combined_beam_R = np.concatenate([beam_plus.sel(col="X"), beam_minus.sel(col="X")])
+        combined_beam_Z = np.concatenate([beam_plus.sel(col="Z"), beam_minus.sel(col="Z")])
+        
+        min_x, max_x = (np.min(combined_beam_R) - padding_R), (np.max(combined_beam_R) + padding_R)
+        min_y, max_y = (np.min(combined_beam_Z) - padding_Z), (np.max(combined_beam_Z) + padding_Z)
     else:
         width_tor = beam_width(dt.analysis.g_hat_Cartesian,np.array([0.0, 0.0, 1.0]),dt.analysis.Psi_3D_Cartesian)
         width_pol = beam_width(dt.analysis.g_hat,np.array([0.0, 1.0, 0.0]),dt.analysis.Psi_3D)
@@ -335,7 +401,7 @@ def get_limits_from_scotty(dt: datatree, padding_R: float = 0.03, padding_Z: flo
 
 def get_ERMES_parameters(
     dt: datatree.DataTree = None,
-    suffix: str = "",
+    prefix: str = "",
     launch_angle: float = None,
     launch_freq_GHz: float = None,
     launch_position: np.array = None,
@@ -353,7 +419,7 @@ def get_ERMES_parameters(
     
     Args:
         dt (DataTree): Scotty output file in .h5 format
-        suffix (str): Suffix for naming (e.g MAST-U, DII-D, etc), defaults to None
+        prefix (str): Prefix for naming (e.g MAST-U, DIII-D, etc), defaults to None
         launch_angle (float): Launch angle in degrees, w.r.t -ve R axis
         launch_freq_GHz (float): Launch frequency in GHz
         port_width (float): Width of port in ERMES in m, so far seems to be arbitrary
@@ -381,14 +447,14 @@ def get_ERMES_parameters(
         launch_freq_GHz = dt.inputs.launch_freq_GHz.values
         launch_beam_width = dt.inputs.launch_beam_width.values
         launch_beam_curvature = dt.inputs.launch_beam_curvature.values
-        launch_R = dt.inputs.launch_position.values[0] if cartesian_scotty is False else dt.inputs.initial_position_cartesian.values[0]
-        launch_Z = dt.inputs.launch_position.values[2] if cartesian_scotty is False else dt.inputs.initial_position_cartesian.values[2]
+        launch_R = dt.inputs.launch_position.values[0] if cartesian_scotty is False else launch_position[0]
+        launch_Z = dt.inputs.launch_position.values[2] if cartesian_scotty is False else launch_position[2]
         
     launch_beam_wavelength = c/(launch_freq_GHz*1e9)
     radius_of_curv = fabs(1/launch_beam_curvature)
     launch_angle_rad = launch_angle*degtorad
     
-    filename = suffix + str(launch_angle) + "_degree_" + str(launch_freq_GHz) + "GHz_"
+    filename = prefix + str(launch_angle) + "_degree_" + str(launch_freq_GHz) + "GHz_"
     
     # Create subdirectory for saving:
     if save:
@@ -441,7 +507,8 @@ def get_ERMES_parameters(
         entry_point = [dt.inputs.initial_position.values[0], dt.inputs.initial_position.values[2]]
     
     if cartesian_scotty:
-        rho_hat_perp, mod_E_par, mod_E_perp, rho_hat_rotated_set, rho_hat_rotated = None, E0, 0, None, [[0,0,0],[0,0,0],[0,0,0]]
+        # TODO update this for new format
+        rho_hat_perp, mod_E_par, mod_E_perp, rho_hat_rotated_set, rho_hat_rotated = None, E0, 0, None, [[0,0,0],[0,0,0],[0,0,0]] 
     else:
         B_entry_vec_RtZ = np.array([dt.analysis.B_R.values[0], dt.analysis.B_T.values[0], dt.analysis.B_Z.values[0]])
         B_entry_vec_XYZ = RtZ_to_XYZ(B_entry_vec_RtZ)
@@ -449,8 +516,14 @@ def get_ERMES_parameters(
         # linear pol vec at launch point = beam k X B field at launch point in (X,Y,Z)
         k_vec = np.array([kx_norm, ky_norm, 0])
         
-        # Polarization from Smits
-        rho_hat_perp, mod_E_par, mod_E_perp, rho_hat_rotated_set, rho_hat_rotated = get_pol_from_smits(k_vec, B_entry_vec_XYZ, B_entry_vec_RtZ, launch_freq_GHz, E0)
+        # Polarization from Scotty and convert to ERMES basis
+        complex_pol_vec = get_pol_from_scotty(dt = dt)
+
+        rho_hat, mod_E_perp, phi_E_perp, mod_E_par, phi_E_par = scotty_pol_to_ERMES(pol = complex_pol_vec, k_vec = k_vec, E0 = E0)
+        
+        
+        # Polarization from Smits. DEPRECATE??
+        #rho_hat_perp, mod_E_par, mod_E_perp, rho_hat_rotated_set, rho_hat_rotated = get_pol_from_smits(k_vec, B_entry_vec_XYZ, B_entry_vec_RtZ, launch_freq_GHz, E0)
 
     # Arrays for saving
     # Surely there is a neater way of doing this, but I'm lazy and want to get this working first before making it pretty
@@ -523,12 +596,14 @@ def get_ERMES_parameters(
         launch_beam_wavelength, 
         kx_norm, 
         ky_norm, 
-        rho_hat_rotated[0][0],
-        rho_hat_rotated[0][1],
-        rho_hat_rotated[0][2],
+        rho_hat[0],
+        rho_hat[1],
+        rho_hat[2],
         E0, 
         mod_E_par,
+        phi_E_par,
         mod_E_perp,
+        phi_E_perp,
         ]
     )
     params_names = np.array([
@@ -549,7 +624,9 @@ def get_ERMES_parameters(
         'polz (normalized)    ', 
         'E0    ', 
         'E par (ERMES)    ',
+        'phi E par (ERMES)    ',
         'E perp (ERMES)    ',  
+        'phi E perp (ERMES)    ',
         ]
     )
     
@@ -567,24 +644,23 @@ def get_ERMES_parameters(
         ax = plt.gca()
         
         if cartesian_scotty:
-            data_misc = {
-                "poloidal_launch_angle_Torbeam": np.round(np.array(dt.inputs.poloidal_launch_angle_Torbeam), 3),
-                "toroidal_launch_angle_Torbeam": np.round(np.array(dt.inputs.toroidal_launch_angle_Torbeam), 3),
-            }
-
-            data_Xaxis = {
-                "arc_length_relative_to_cutoff": np.array(dt.analysis.arc_length_relative_to_cutoff),
-            }
+            
+            width_at_tau = dt.analysis.beam_width_2
+            beam_width_vector = dt.analysis.y_hat_cartesian*width_at_tau
             
             data_Yaxis = {
                 "q_X": np.array(dt.solver_output.q_X),
                 "q_Y": np.array(dt.solver_output.q_Y),
                 "q_Z": np.array(dt.solver_output.q_Z),
             }
+            
+            beam_vector = np.column_stack([data_Yaxis["q_X"], data_Yaxis["q_Y"], data_Yaxis["q_Z"]])
+            beam_plus = beam_vector + beam_width_vector
+            beam_minus = beam_vector - beam_width_vector
 
-            # Plotting ray trajectory in 2d space
-            ax.scatter(data_Yaxis["q_X"][0], data_Yaxis["q_Z"][0], color='black', label="Start Point in Plasma")
-            ax.plot(data_Yaxis["q_X"], data_Yaxis["q_Z"], linestyle='-', linewidth=2, zorder=1, label="Trajectory")
+            plt.plot(beam_plus.sel(col="X"), beam_plus.sel(col="Z"), "--k")
+            plt.plot(beam_minus.sel(col="X"), beam_minus.sel(col="Z"), "--k", label="Beam width")
+            plt.plot(data_Yaxis["q_X"], data_Yaxis["q_Z"], "-", c='black', linewidth=2, zorder=1, label = "Central ray")
         else:
             # Plot the plasma
             plot_poloidal_crosssection(dt=dt, ax=plt.gca(), highlight_LCFS=False)
@@ -977,7 +1053,7 @@ def get_moving_RMS(observed_data, window_size: int):
     
     return smoothed_data
 
-def ERMES_results_to_plots(res: str = None, msh: str = None, dt: datatree = None, plot: bool = False, save: bool = True, grid_resolution: float = 8e-4):
+def ERMES_results_to_plots(res: str = None, msh: str = None, dt: datatree = None, plot: bool = False, save: bool = True, grid_resolution: float = 8e-4, prefix: str = "prefix"):
     """
     Plot ERMES modE in R,Z with Scotty overlaid, Plot ERMES modE, rE vec, transverse modE along central ray with Scotty calculations where applicable.
     
@@ -986,6 +1062,9 @@ def ERMES_results_to_plots(res: str = None, msh: str = None, dt: datatree = None
         msh (str): path to the .msh file
         dt (datatree): Scotty output file
         plot (bool): Plot it!
+        save (bool): Save the error results
+        grid_resolution (float): Resolution of grid used for meshing
+        prefix (str): Prefix for error file names
     """
     # Node ID as XYZ coords
     node_to_xyz = ERMES_nodes_to_xyz(msh_file=msh)
@@ -1363,14 +1442,14 @@ def ERMES_results_to_plots(res: str = None, msh: str = None, dt: datatree = None
         
         # Save the errors
         if save:
-            np.savez(os.getcwd() + f"\\final_{dt.inputs.launch_freq_GHz.values}_{handle_scotty_launch_angle_sign(dt)}_errors", err_modE, err_width)
+            np.savez(os.getcwd() + f"\\{prefix}_{dt.inputs.launch_freq_GHz.values}_{handle_scotty_launch_angle_sign(dt)}_errors", err_modE, err_width)
          
 if __name__ == '__main__':
     # MAST-U
     """
     get_ERMES_parameters(
         dt=load_scotty_data('\\MAST-U\\scotty_output_freq40.0_pol-13.0_rev.h5'),
-        suffix="MAST-U_",
+        prefix="MAST-U_",
         launch_angle=13.0, 
         launch_freq_GHz=40, 
         port_width=0.01, 
@@ -1384,19 +1463,18 @@ if __name__ == '__main__':
     #"""
     
     #DIII-D
-    """
+    #"""
     get_ERMES_parameters(
-        dt=load_scotty_data('\\Output\\scotty_output_freq72.5_pol-7.0_rev.h5'),
-        suffix="DIII-D_new_",
-        launch_angle=7.0, 
+        dt=load_scotty_data('\\Output\\scotty_output_freq72.5_pol-11.0_rev.h5'),
+        prefix="DIII-D_new_",
+        launch_angle=11.0, 
         launch_freq_GHz=72.5, 
-        port_width=0.01, 
         #launch_positon=[3.01346,0,-0.09017],
         #launch_beam_curvature=-0.95, 
         #launch_beam_width=0.125, 
-        dist_to_ERMES_port=0.68, 
-        plot=True,
-        save=False,
+        dist_to_ERMES_port=0.66, 
+        plot=False,
+        save=True,
         cartesian_scotty=False
     )
     
@@ -1405,17 +1483,17 @@ if __name__ == '__main__':
     #2D Linear Layer
     """
     get_ERMES_parameters(
-        dt=load_scotty_data('\\Output\\scotty_output_2D_linear_freq.h5'),
-        suffix="2D_linear_",
-        launch_angle=30.0, 
-        launch_freq_GHz=15.0, 
-        port_width=0.01, 
+        dt=load_scotty_data('\\Output\\scotty_output_2D_linear_freq30_45deg.h5'),
+        prefix="2D_linear_new_",
+        launch_angle=45.0, 
+        launch_freq_GHz=30.0, 
+        #port_width=0.01, 
         launch_position=[0,0,0],
         #launch_beam_curvature=-0.95, 
         #launch_beam_width=0.125, 
         dist_to_ERMES_port=0, 
         plot=True,
-        save=False,
+        save=True,
         cartesian_scotty=True
     )
     
@@ -1424,24 +1502,25 @@ if __name__ == '__main__':
     #get_pol_from_smits([cos(-30*pi/180), sin(-30*pi/180), 0], [0,0,1], [0,-1,0], 15, 109.69092568169533, mode = 1)
     
     # Text ERMES output to plots
-    #"""
+    """
     ERMES_results_to_plots(
         #res="\\ERMES_output_files\\MAST-U_7_degree_40_EDG2.post.res", 
         #msh="\\ERMES_output_files\\MAST-U_7_degree_40_EDG2.post.msh",
         #dt=load_scotty_data('\\MAST-U\\scotty_output_freq40.0_pol-7.0_rev.h5'),
-        res="\\ERMES_output_files\\DIII-D_7_degree_new.post.res", 
-        msh="\\ERMES_output_files\\DIII-D_7_degree_new.post.msh",
-        dt=load_scotty_data('\\Output\\scotty_output_freq72.5_pol-7.0_rev.h5'),
+        
+        res="\\Final_Ermes_output\\DIII-D_11_degree.post.res", 
+        msh="\\Final_Ermes_output\\DIII-D_11_degree.post.msh",
+        dt=load_scotty_data('\\Output\\scotty_output_freq72.5_pol-11.0_rev.h5'),
         plot=True,
         grid_resolution=4e-4,
-        save=False,
+        save=True,
+        prefix="DIII-D"
     )
     
-    # _new => 72.5, 4e-4, RME1st unless stated otherwise
     #"""
     
     """
-    # Plotting stuffs
+    # Plotting stuffs to get summary of errors
     launch_angles = [3.0, 5.0, 7.0, 9.0, 11.0, 13.0, 15.0]
     #toroidal_diff = np.array([np.max(load_scotty_data(f"\\Output\\scotty_output_freq72.5_pol-{launch_angle}_rev.h5").analysis.q_Y.values) for launch_angle in launch_angles]) - np.array([np.min(load_scotty_data(f"\\Output\\scotty_output_freq72.5_pol-{launch_angle}_rev.h5").analysis.q_Y.values) for launch_angle in launch_angles])
     q_Y_arrays = np.row_stack([load_scotty_data(f"\\Output\\scotty_output_freq72.5_pol-{launch_angle}_rev.h5").analysis.q_Y.values for launch_angle in launch_angles])
