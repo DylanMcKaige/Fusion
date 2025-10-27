@@ -34,6 +34,7 @@ Updated: 27/10/2025
 """
 import os, json, datatree
 import numpy as np
+import numpy as numpy
 import pandas as pd
 from tqdm import tqdm
 from math import sin, cos, tan, acos, atan, sqrt, fabs
@@ -450,7 +451,7 @@ def get_ERMES_parameters(
     launch_angle_tor = dt.inputs.toroidal_launch_angle_Torbeam.values
     k_vec_launch_RtZ = dt.inputs.launch_K.values
     k_vec_launch_XYZ = RtZ_to_XYZ(k_vec_launch_RtZ)
-    k_vec_launch_XYZ_norm = k_vec_launch_XYZ/np.linalg.norm(k_vec_launch_XYZ)
+    k_vec_launch_XYZ_norm = k_vec_launch_XYZ / numpy.linalg.norm(k_vec_launch_XYZ)
     launch_R = dt.inputs.launch_position.values[0] if cartesian_scotty is False else launch_position[0]
     launch_Z = dt.inputs.launch_position.values[2] if cartesian_scotty is False else launch_position[2]
     # launch_zeta, t, always equal to 0
@@ -484,6 +485,7 @@ def get_ERMES_parameters(
     w_ERMES = 2*w0*sqrt(1+(dist_to_ERMES_port/z_R)**2) # Width of beam at port position in ERMES
     xw = launch_R - distance_to_launcher*cos(launch_angle_pol_rad) # Centre of waist
     yw = launch_Z + distance_to_launcher*sin(launch_angle_pol_rad) # Centre of waist
+    zw = 0 + distance_to_launcher*sin(launch_angle_tor_rad) # Centre of waist
     
     # This formula is from Quinn's thesis
     z0 = 377 # Impedance of free space
@@ -503,6 +505,66 @@ def get_ERMES_parameters(
     # Slightly wider to minimize numerical errors at boundary of port
     xp0_ext, yp0_ext = xp - w_ERMES*1.1/2*sin(launch_angle_pol_rad), yp - w_ERMES*1.1/2*cos(launch_angle_pol_rad) # Bottom
     xp1_ext, yp1_ext = xp + w_ERMES*1.1/2*sin(launch_angle_pol_rad), yp + w_ERMES*1.1/2*cos(launch_angle_pol_rad) # Top
+
+    def generate_launcher_port_3D(launch_R, launch_Z, dist_to_ERMES_port, w_ERMES, k_hat):
+        """
+        Generate 3D launcher port geometry in ERMES coordinates.
+
+        The port is centered dist_to_ERMES_port along the launch direction (k_hat),
+        with a square face perpendicular to k_hat and side length w_ERMES.
+
+        Args:
+            launch_R (float): R coordinate of launcher position (m)
+            launch_Z (float): Z coordinate of launcher position (m)
+            dist_to_ERMES_port (float): Distance from launcher to ERMES port along k_hat (m)
+            w_ERMES (float): Full width of the launch port (m)
+            k_hat (array): 3D unit wavevector direction (includes both poloidal & toroidal angles)
+
+        Returns:
+            port_corners (array): (4,3) Coordinates of the four corners of the main port plane.
+            padded_corners (array): (4,3) Coordinates of the padded (1.1xlarger) port plane.
+            center (array): Center coordinates of the port plane.
+            in_plane_basis (array): (2,3) Orthonormal basis vectors spanning the plane (u,v).
+        """
+
+        k_hat = np.asarray(k_hat, float)
+        k_hat /= np.linalg.norm(k_hat)  # Ensure normalized
+
+        # Centre
+        center = np.array([launch_R, launch_Z, 0.0]) + dist_to_ERMES_port * k_hat
+
+        # Construct orthonormal in-plane basis (u, v)
+        # Choose a reference vector not parallel to k_hat
+        ref = np.array([0, 0, 1]) if abs(k_hat[2]) < 0.9 else np.array([0, 1, 0])
+        u_hat = np.cross(k_hat, ref)
+        u_hat /= np.linalg.norm(u_hat)
+        v_hat = np.cross(k_hat, u_hat)
+        v_hat /= np.linalg.norm(v_hat)
+
+        # Get corners
+        half_w = w_ERMES / 2
+        port_corners = np.array([
+            center + half_w * ( u_hat + v_hat),
+            center + half_w * (-u_hat + v_hat),
+            center + half_w * (-u_hat - v_hat),
+            center + half_w * ( u_hat - v_hat)
+        ])
+
+        # Padded corners
+        pad_w = w_ERMES * 1.1 / 2
+        padded_corners = np.array([
+            center + pad_w * ( u_hat + v_hat),
+            center + pad_w * (-u_hat + v_hat),
+            center + pad_w * (-u_hat - v_hat),
+            center + pad_w * ( u_hat - v_hat)
+        ])
+
+        return port_corners, padded_corners, center, (u_hat, v_hat)
+
+    port_corners, padded_corners, center, (u_hat, v_hat) = generate_launcher_port_3D(
+        launch_R, launch_Z, dist_to_ERMES_port, w_ERMES, k_vec_launch_XYZ_norm
+    )
+    
     # Domain calculations
     min_x, max_x, min_y, max_y, min_z, max_z = get_limits_from_scotty(dt, cartesian_scotty = cartesian_scotty)
     # Bottom right (closest to port) first
@@ -511,12 +573,13 @@ def get_ERMES_parameters(
     x_tl, y_tl = min_x, max_y
     x_tr, y_tr = xp1_ext, max_y
     
-    
+    # Handle entry point
     if cartesian_scotty:
-        entry_point = [0, 0] # Not needed for 2D Linear Layer
+        entry_point = [0, 0, 0] # Not needed for 2D Linear Layer
     else:
-        entry_point = [dt.inputs.initial_position.values[0], dt.inputs.initial_position.values[2]]
+        entry_point = RtZ_to_XYZ(dt.inputs.initial_position.values)
     
+    # Handle pol vector and E values and phases
     if cartesian_scotty:
         # TODO update this for new format
         rho_hat_perp, mod_E_par, mod_E_perp, rho_hat_rotated_set, rho_hat_rotated = None, E0, 0, None, [[0,0,0],[0,0,0],[0,0,0]] 
@@ -532,63 +595,80 @@ def get_ERMES_parameters(
 
         rho_hat, mod_E_perp, phi_E_perp, mod_E_par, phi_E_par = scotty_pol_to_ERMES(pol = complex_pol_vec, k_vec = g_vec_entry_XYZ, E0 = E0)
 
-    # Arrays for saving
-    # Surely there is a neater way of doing this, but I'm lazy and want to get this working first before making it pretty
-    points_x = np.array([
-        xp, 
-        xp0, 
-        xp1, 
-        xp0_ext,
-        xp1_ext,
-        x_br,
-        x_bl,
-        x_tr,
-        x_tl,
-        port_delta_z,
-        min_z,
-        max_z,
-        launch_R, 
-        xw,
-        entry_point[0],
-        ]
-    )
-    points_y = np.array([
-        yp, 
-        yp0, 
-        yp1, 
-        yp0_ext,
-        yp1_ext,
-        y_br,
-        y_bl,
-        y_tr,
-        y_tl,
-        0,
-        0,
-        0,
-        launch_Z,
-        yw,
-        entry_point[1],
-        ]
-    )
-    points_names = np.array([
-        'Source Position (front face of port)    ', 
-        'Port BL    ', 
-        'Port TL    ', 
-        'Port Padding BL    ',
-        'Port Padding TL    ',
-        'Domain BR    ',
-        'Domain BL    ',
-        'Domain TR    ',
-        'Domain TL    ',
-        '3D: Port delta z    ',
-        '3D: min z    ',
-        '3D: max z    ',
-        'Launch Position    ', 
-        'Waist Position    ',
-        'Point of Entry    ',
-        ]
-    )
+    # For saving    
+    def save_ERMES_params(path, filename, vec_names, vec_vals, params_names, params_val):
+        """
+        Cleaned up saving function
 
+        Args:
+            path (str): Path to save
+            filename (str): Filename to save
+            vec_names (array): Names of vectors
+            vecs (array): Values of vectors
+            params_names (array): Names of parameters (scalar)
+            params_val (array): Value of parameters
+
+        Raises:
+            ValueError: If vecs don't have 3
+        """
+        # Ensure inputs are arrays
+        vec_vals = np.asarray(vec_vals, float)
+        vec_names = np.asarray(vec_names, str)
+        params_names = np.asarray(params_names, str)
+        params_val = np.asarray(params_val, float)
+
+        # Validate shape (ERMES Cartesian)
+        if vec_vals.shape[1] != 3:
+            raise ValueError("`points` must have shape (N, 3) for x, y, z coordinates")
+
+        file_path = f"{path}{filename}_ERMES_params.txt"
+
+        # Write 3D points
+        header_points = (
+            "=== Cartesian Points in ERMES (3D) ===\n"
+            f'{"Point":40s} {"X":>12s} {"Y":>12s} {"Z":>12s}\n'
+        )
+
+        with open(file_path, 'w') as f:
+            f.write(header_points)
+            for name, (x, y, z) in zip(vec_names, vec_vals):
+                f.write(f"{name:40s} {x:12.6f} {y:12.6f} {z:12.6f}\n")
+
+            # Write scalar parameters
+            f.write("\n\n=== Beam and Simulation Parameters ===\n")
+            f.write(f'{"Parameter":40s} {"Value":>15s}\n')
+            for name, val in zip(params_names, params_val):
+                f.write(f"{name:40s} {val:15.6g}\n")
+
+        print(f"Saved ERMES parameters to {file_path}")
+
+    vec_vals = np.vstack([
+        np.asarray(center),
+        port_corners.reshape(-1, 3),
+        padded_corners.reshape(-1, 3),
+        np.array([launch_R, launch_Z, 0]),
+        np.array(entry_point),
+        np.array([xw, yw, zw]),
+        np.asarray(rho_hat),
+        np.asarray(k_vec_launch_XYZ_norm)
+    ])
+    vec_names = np.array([
+        'Source Position (front face of port)    ', 
+        'Port 0    ', 
+        'Port 1    ',
+        'Port 2    ',
+        'Port 3    ', 
+        'Port Padding 0    ',
+        'Port Padding 1    ',
+        'Port Padding 2    ',
+        'Port Padding 3    ',
+        'Launch Position    ', 
+        'Point of Entry    ',
+        'Waist Position    ',
+        'pol vec    ',
+        'k vec    '
+    ])
+    
     # Beam params
     params_val = np.array([
         launch_angle_pol, 
@@ -601,19 +681,12 @@ def get_ERMES_parameters(
         z_R, 
         launch_freq_GHz, 
         launch_beam_wavelength, 
-        k_vec_launch_XYZ_norm[0], 
-        k_vec_launch_XYZ_norm[1], 
-        k_vec_launch_XYZ_norm[2], 
-        rho_hat[0],
-        rho_hat[1],
-        rho_hat[2],
         E0, 
         mod_E_par,
         phi_E_par,
         mod_E_perp,
         phi_E_perp,
-        ]
-    )
+    ])
     params_names = np.array([
         'Poloidal Launch Angle    ', 
         'Toroidal Launch Angle    ', 
@@ -625,31 +698,52 @@ def get_ERMES_parameters(
         'Rayleigh Length (m)    ', 
         'Beam Frequency (GHz)    ', 
         'Beam Wavelength (m)    ', 
-        'kx (normalized)    ', 
-        'ky (normalized)    ', 
-        'kz (normalized)    ', 
-        'polx (normalized)    ', 
-        'poly (normalized)    ', 
-        'polz (normalized)    ', 
         'E0    ', 
         'E par (ERMES)    ',
         'phi E par (ERMES)    ',
         'E perp (ERMES)    ',  
         'phi E perp (ERMES)    ',
-        ]
-    )
+    ])
+
+    # For plotting
+    points_x = np.array([
+        xp, 
+        xp0, 
+        xp1, 
+        xp0_ext,
+        xp1_ext,
+        x_br,
+        x_bl,
+        x_tr,
+        x_tl,
+        launch_R, 
+        xw,
+        entry_point[0],
+    ])
+    points_y = np.array([
+        yp, 
+        yp0, 
+        yp1, 
+        yp0_ext,
+        yp1_ext,
+        y_br,
+        y_bl,
+        y_tr,
+        y_tl,
+        launch_Z,
+        yw,
+        entry_point[1],
+    ])
     
     # Save it!
     if save:
-        np.savetxt(path + filename + 'ERMES_params', np.array([points_names, points_x, points_y], dtype=object).T, delimiter=' ', header = 'Cartesian points in ERMES', fmt='%s')
-        # There's probably a better way to do this 
-        with open(path + filename + 'ERMES_params', 'a') as file:
-            np.savetxt(file, np.array([params_names, params_val], dtype=object).T, delimiter=' ', header='Beam Params', fmt = '%s')
-        #with open(path + filename + 'ERMES_params', 'a') as file:
-        #    np.savetxt(file, np.round(rho_hat_rotated_set, 1), header='Rotated Polarization Vector', fmt = '%s')
+        save_ERMES_params(path = path, filename = filename + 'ERMES_params', 
+                          vec_names=vec_names, vec_vals=vec_vals, 
+                          params_names = params_names, params_val=params_val)
 
     if plot:
-        plt.scatter(points_x, points_y, s = 8)
+        # Note, this only gives a poloidal cross section plot.
+        plt.scatter(points_x, points_y, s = 8) 
         ax = plt.gca()
         
         if cartesian_scotty:
@@ -1452,11 +1546,11 @@ if __name__ == '__main__':
     #DIII-D
     #"""
     get_ERMES_parameters(
-        dt=load_scotty_data('\\Output\\scotty_output_freq72.5_pol-7.0_rev.h5'),
-        prefix="DIII-D_new_test_",
+        dt=load_scotty_data('\\Output\\scotty_output_tor_ideal__freq72.5_pol-7.0_tor1.5726_rev.h5'),
+        prefix="DIII-D_new_test_save_",
         #launch_positon=[3.01346,0,-0.09017],
         dist_to_ERMES_port=0.66,
-        plot=False,
+        plot=True,
         save=True,
         cartesian_scotty=False
     )
