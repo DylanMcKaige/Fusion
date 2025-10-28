@@ -10,10 +10,7 @@ Spits out .txt of all the necessary data.
 All paths are w.r.t CWD
 
 TODO
-1. Tidy up saving
-2. For modE along central ray and width, use coordinates of these points from Scotty and sample the closest node to this point. 
-For both 2D and 3D. This should be fastest
-3. Add 2D/ 3D option
+1. Separate this into 2-3 different files?
 
 References
     [1] Two dimensional full-wave simulations of Doppler back-scattering in tokamak plasmas with COMSOL by Quinn Pratt et al (in-progress paper)
@@ -30,7 +27,7 @@ BEAM referes to xhat yhat ghat
 
 Written by Dylan James Mc Kaige
 Created: 16/5/2025
-Updated: 27/10/2025
+Updated: 28/10/2025
 """
 import os, json, datatree
 import numpy as np
@@ -45,6 +42,8 @@ from scipy.spatial import cKDTree
 from scipy.optimize import curve_fit
 from matplotlib import pyplot as plt
 from matplotlib.widgets import Slider
+from matplotlib.colors import TwoSlopeNorm
+from matplotlib import colormaps as cm
 from scotty.analysis import beam_width
 from scotty.plotting import plot_poloidal_crosssection, plot_toroidal_contour, maybe_make_axis
 from scotty.fun_general import find_vec_lab_Cartesian, find_Psi_3D_lab_Cartesian
@@ -64,9 +63,25 @@ def handle_scotty_launch_angle_sign(dt: datatree):
     else:
         return (abs(dt.inputs.poloidal_launch_angle_Torbeam.values)-360)
 
+def scotty_cyl_to_RtZ(array, dt):
+    """
+    Convert Scotty Cylindrical to Scotty Cartesian, R zeta Z to R t Z
+    
+    Args:
+        array (array): The array to convert
+        dt (datatree): Scotty output file
+    """
+    cos_q_zeta = np.cos(dt.analysis.q_zeta.values)
+    sin_q_zeta = np.sin(dt.analysis.q_zeta.values)
+    cart = np.empty([dt.inputs.len_tau.values, 3])
+    cart[:, 0] = array[:, 0] * cos_q_zeta - array[:, 1] * sin_q_zeta
+    cart[:, 1] = array[:, 0] * sin_q_zeta + array[:, 1] * cos_q_zeta
+    cart[:, 2] = array[:, 2]
+    return cart
+
 def RtZ_to_XYZ(a: np.array) -> np.array:
     """
-    Convert an array from SCOTTY cartesian (R,t,Z) to ERMES cartesian (X,Y,Z), keeping the right handed coordinate system.
+    Convert a vector array from SCOTTY cartesian (R,t,Z) to ERMES cartesian (X,Y,Z), keeping the right handed coordinate system.
     
     This function is for consistency because I keep messing this up.
     
@@ -78,6 +93,27 @@ def RtZ_to_XYZ(a: np.array) -> np.array:
     
     Returns:
         b (array): The transformed vector in (X,Y,Z) ERMES Cartesian basis
+
+    """
+    assert len(a) == 3, "This function only supports single arrays of length 3, if you do this on an array of arrays, you gotta stack it"
+    
+    b = np.array([a[0], a[2], -a[1]])
+    return b
+
+def XYZ_to_RtZ(a: np.array) -> np.array:
+    """
+    Convert a vector array from ERMES cartesian (X,Y,Z) to SCOTTY cartesian (R,t,Z), keeping the right handed coordinate system.
+    
+    This function is for consistency because I keep messing this up.
+    
+    By right-hand rule, R x t points up, R x Z points out of the plane. So we can't directly say X = R, Y = Z, Z = t. 
+    We need to flip the sign of t to maintian the right-handedness
+    
+    Args:
+        a (array): The vector to transform in (X,Y,Z) ERMES Cartesian basis
+    
+    Returns:
+        b (array): The transformed vector in (R,t,Z) SCOTTY cartesian basis
 
     """
     assert len(a) == 3, "This function only supports single arrays of length 3, if you do this on an array of arrays, you gotta stack it"
@@ -278,93 +314,7 @@ def get_psi_normal_entry(psi_spline: RectBivariateSpline, R_entry, Z_entry) -> n
     
     psi_normal = np.array([dpsi_dR, dpsi_dZ, 0])
     return psi_normal
-
-#TO BE DEPRECATED
-def get_pol_from_smits(k_vec: np.array, B_entry_vec_XYZ: np.array, B_entry_vec_RtZ, launch_freq_GHz: float, E0: float, mode: int = 0):
-    """
-    TO BE DEPRECATED
-    Get the polarization vector and values of E_perp and E_par using Smits [5]
-    
-    Args:
-        k_vec (np.array): k vector 
-        B_entry_vec_XYZ (np.array): B vector at point of entry
-        B_entry_vec_RtZ (np.array): B vector at point of entry
-        launch_freq_GHz (float): Launch frequency in GHz
-        E0 (float): E0 value
-        mode (int): 0 (X) or 1 (O)
-
-    Returns:
-        rho_hat (array): Polarization vector in XYZ basis
-        mod_E_par (float): Mod E_par in ERMES
-        mod_E_perp (float): Mod E_per in ERMES
-        rho_hat_rotated_set (array): Array of [pol theta, pol vector]
-    """
-    assert mode == 0 or 1, "Invalid mode. Either 0 (X) or 1(O)"
-    
-    # Normalize to make life simpler
-    k_vec_hat = k_vec/np.linalg.norm(k_vec)
-    B_entry_vec_XYZ_hat = B_entry_vec_XYZ/np.linalg.norm(B_entry_vec_XYZ)
-    
-    # Angle between k and b
-    theta = acos(np.dot(k_vec_hat, B_entry_vec_XYZ_hat))
-    
-    # c from [5] (electron-cyclotron freq)
-    C = (1.6e-19*np.linalg.norm(B_entry_vec_XYZ) / 9.11e-31) / (2*pi*launch_freq_GHz*1e9)
-    p_prime = sqrt(sin(theta)**4 + 4*cos(theta)**2 / C**2)
-    
-    # Angle of rho above kb plane and perp to k for QX-mode
-    if mode == 0: gamma = atan(-2*cos(theta) / (C*(sin(theta)**2 + p_prime)) ) # Gamma from theta from [5] (best coupling)
-    if mode == 1: gamma = atan( (C*(sin(theta)**2 - p_prime)) / 2*cos(theta) ) # Gamma from theta from [5] (best coupling)
-    
-    # Get the rho unit vector that is perp to k and b. This is our initial & supposedly ideal pol
-    rho_hat_perp = np.cross(k_vec_hat, B_entry_vec_XYZ_hat) 
-
-    # Get Bp, Bt at entry
-    B_t_entry = B_entry_vec_RtZ[1]
-    B_p_entry = sqrt(B_entry_vec_RtZ[0]**2 + B_entry_vec_RtZ[2]**2)
-    pitch_angle_entry = abs(atan(B_p_entry/B_t_entry))
-    
-    print("pitch angle at entry:", pitch_angle_entry*180/pi)
-    print("kb angle at entry: ", theta*180/pi)
-    
-    # Smits polarization tilt
-    phi = acos(cos(pitch_angle_entry)/sin(theta))
-    print("Smits pol tilt angle: ", phi*180/pi)
-    # Hypothesized ideal pol angle
-    print("Hypthesis pol angle: ", (phi+pitch_angle_entry)*180/pi) # abs cus it's cos
-    
-    # To test for different pol vectors
-    theta_rho = np.array([phi+pitch_angle_entry])
-    #theta_rho = np.arange(start = -pi/2, stop = pi/2, step = pi/18) # 10 deg increments
-
-    rho_hat_rotated = rotate_rodrigues(rho_hat_perp, k_vec_hat, theta_rho)
-    print(rho_hat_rotated)
-    if mode == 0:
-        mod_E_rho = np.sqrt(E0**2 / (1 + np.tan(gamma)**2))# rho_hat_kb
-        mod_E_eta = np.sqrt(E0**2 - mod_E_rho**2) # eta_hat_kb
-    if mode == 1:
-        mod_E_eta = np.sqrt(E0**2 / (1 + np.tan(gamma)**2))# rho_hat_kb
-        mod_E_rho = np.sqrt(E0**2 - mod_E_eta**2) # eta_hat_kb
-    print("E par", mod_E_rho)
-    print("E perp", mod_E_eta)
-    
-    # Check if rho perp k and perp b
-    assert np.isclose(np.dot(rho_hat_rotated,k_vec_hat), 0, atol=1e-5), "rho not perp k"
-    #assert np.isclose(np.dot(rho_hat_rotated,B_entry_vec_XYZ_hat), 0, atol=1e-5), "rho not perp b at entry"
-    
-    # Linear pol from quinn's thesis. Doesnt exactly work, likely diff in coordinate systems
-    # rho_quinn = np.array([-sin(9*pi/180)*cos(pitch_angle_entry),cos(9*pi/180)*cos(pitch_angle_entry), sin(pitch_angle_entry)])
-    # print(rho_quinn)
-    #Kx = (2j*cos(theta)) / (C*sin(theta)**2 + sqrt(C**2 * sin(theta)**4 + 4*cos(theta)**2))
-    #Ko = (2j*cos(theta)) / (C*sin(theta)**2 - sqrt(C**2 * sin(theta)**4 + 4*cos(theta)**2))
-    #P_X = np.linalg.norm(Kx)**2
-    #P_O = np.linalg.norm(Ko)**2
-    #print(P_X)
-    #print(P_O)
-    #print(P_X + P_O)
-    
-    return rho_hat_perp, mod_E_rho, mod_E_eta, np.column_stack((theta_rho*180/pi, rho_hat_rotated)), rho_hat_rotated
-    
+   
 def get_limits_from_scotty(dt: datatree, padding_R: float = 0.03, padding_Z: float = 0.01, padding_t: float = 0.01, cartesian_scotty: bool = False):
     """
     Get the min and max R t Z from Scotty in ERMES cartesian basis by adding padding to tor and pol width
@@ -626,19 +576,19 @@ def get_ERMES_parameters(
         # Write 3D points
         header_points = (
             "=== Cartesian Points in ERMES (3D) ===\n"
-            f'{"Point":40s} {"X":>12s} {"Y":>12s} {"Z":>12s}\n'
+            f'{"Point":40s} {"X":>15s} {"Y":>15s} {"Z":>15s}\n'
         )
 
         with open(file_path, 'w') as f:
             f.write(header_points)
             for name, (x, y, z) in zip(vec_names, vec_vals):
-                f.write(f"{name:40s} {x:12.6f} {y:12.6f} {z:12.6f}\n")
+                f.write(f"{name:40s} {x:15.10f} {y:15.10f} {z:15.10f}\n")
 
             # Write scalar parameters
             f.write("\n\n=== Beam and Simulation Parameters ===\n")
             f.write(f'{"Parameter":40s} {"Value":>15s}\n')
             for name, val in zip(params_names, params_val):
-                f.write(f"{name:40s} {val:15.6g}\n")
+                f.write(f"{name:40s} {val:15.10g}\n")
 
         print(f"Saved ERMES parameters to {file_path}")
 
@@ -796,7 +746,7 @@ def get_ERMES_parameters(
         plt.gca().set_aspect('auto')
         plt.show()
 
-def calc_Eb_from_scotty(dt: datatree, E0: float = 1.0, wx: float = 0.0, wy: float = 0.0):
+def calc_Eb_from_scotty(dt: datatree, E0: float = 1.0):
     """
     Calcualte the probe beam Electric Field amplitude along the central ray using Eqn 33 of [4]
     Returns Eb(tau) where tau is the beam parameter
@@ -804,8 +754,6 @@ def calc_Eb_from_scotty(dt: datatree, E0: float = 1.0, wx: float = 0.0, wy: floa
     Args:
         dt (datatree): Scotty output file
         E0 (float): For scaling
-        wx (float): width in xhat direction
-        wy (float): width in yhat direciton
         
     Returns:
         Eb_tau (array): |Eb| at all the points along the ray w.r.t tau
@@ -821,9 +769,15 @@ def calc_Eb_from_scotty(dt: datatree, E0: float = 1.0, wx: float = 0.0, wy: floa
     g_hat_RtZ = dt.analysis.g_hat.values
     g_mag = dt.analysis.g_magnitude.values
     
-    q_R=dt.analysis.q_R.values
-    q_Z=dt.analysis.q_Z.values
-    q_zeta=dt.analysis.q_zeta.values
+    q_R = dt.analysis.q_R.values
+    q_Z = dt.analysis.q_Z.values
+    q_zeta = dt.analysis.q_zeta.values
+    launch_R = dt.inputs.launch_position.values[0]
+    launch_zeta = dt.inputs.launch_position.values[1]
+    launch_Z = dt.inputs.launch_position.values[2]
+    launch_K_R = dt.inputs.launch_K.values[0]
+    launch_K_zeta = dt.inputs.launch_K.values[1]
+    launch_K_Z = dt.inputs.launch_K.values[2]
     K_R = dt.analysis.K_R.values
     K_zeta = dt.analysis.K_zeta_initial.values
     beam_trajectiry_RtZ = dt.analysis.beam_cartesian.values
@@ -879,7 +833,7 @@ def calc_Eb_from_scotty(dt: datatree, E0: float = 1.0, wx: float = 0.0, wy: floa
     Psi_w_xyg[:, 1, 0] = Psi_xy
     Psi_w_xyg[:, 1, 1] = Psi_yy
     
-    Psi_3D_ant_RtZ = find_Psi_3D_lab_Cartesian(dt.analysis.Psi_3D_lab_launch, q_R, q_zeta, K_R, K_zeta) # Since Psi_3D is in CYL basis
+    Psi_3D_ant_RtZ = find_Psi_3D_lab_Cartesian(dt.analysis.Psi_3D_lab_launch, launch_R, launch_zeta, launch_K_R, launch_K_zeta) # Since Psi_3D is in CYL basis
     g_hat_ant_RtZ = g_hat_RtZ[0]
     Psi_w_ant_RtZ = mat_to_plane_perp_to_g(Psi_3D_ant_RtZ, g_hat_ant_RtZ)
     Psi_w_ant_xyg = mat_RtZ_to_xyg(Psi_w_ant_RtZ)
@@ -1131,20 +1085,7 @@ def get_moving_RMS(observed_data, window_size: int):
     
     return smoothed_data
 
-def project_Psi_3D_to_basis():
-    """
-    Given some basis, Project Psi_3D to it. Used for 3D analysis
-    
-    1) From Psi_3D_lab_cartesian (RtZ), project to ERMES XYZ, then from there we can go to any basis defined by ERMES XYZ
-    """
-
-def project_Psi_3D_to_plane():
-    """
-    Given some plane (defined by a normal), Project Psi_3D to it. Used for 2D analysis
-    
-    """
-
-# REDO THIS WHOLE FUNCTION
+# TO BE DEPRECATED
 def ERMES_results_to_plots(res: str = None, msh: str = None, dt: datatree = None, plot: bool = False, save: bool = True, grid_resolution: float = 8e-4, prefix: str = "prefix"):
     """
     Plot ERMES modE in R,Z with Scotty overlaid, Plot ERMES modE, rE vec, transverse modE along central ray with Scotty calculations where applicable.
@@ -1325,7 +1266,7 @@ def ERMES_results_to_plots(res: str = None, msh: str = None, dt: datatree = None
 
         # Plot
         plt.figure(figsize=(6, 5))
-        c = plt.pcolormesh(X, Y, Z, shading='auto', cmap='viridis')
+        c = plt.pcolormesh(X, Y, Z, shading='auto', cmap='YlOrRd')
         plt.xlabel("R (m)")
         plt.ylabel("Z (m)")
         plt.title(r"Results for ERMES 20.0 & Scotty, $\theta_{pol}$="
@@ -1524,7 +1465,707 @@ def ERMES_results_to_plots(res: str = None, msh: str = None, dt: datatree = None
         # Save the errors
         if save:
             np.savez(os.getcwd() + f"\\{prefix}_{dt.inputs.launch_freq_GHz.values}_{handle_scotty_launch_angle_sign(dt)}_errors", err_modE, err_width)
-         
+   
+def ERMES_results_to_plots_3D(
+    res: str,
+    msh: str,
+    dt,
+    grid_resolution: float = 4e-4,
+    normal_vector: np.array = None,
+    plot_blocks = None,
+    save: bool = False,
+    prefix: str = "ERMES_results"
+):
+    """
+    Modular ERMES analysis & plotting (3D-native, 2D just means Z = 0)
+
+    Args:
+        res (str): Path to .res file (ERMES results)
+        msh (str): Path to .msh file (ERMES mesh)
+        dt (datatree): Scotty output file
+        grid_resolution (float): Sampling resolution from meshing (m)
+        normal_vector (array): Normal vector to 2D planes for plotting
+        plot_blocks (list[str]): Choose which logical plot blocks to render. If None, all are used. Available: "field_map", "modE_vs_tau", "transverse_profile", "widths", "flux", "errors"
+        save (bool): If True, each plot block saves a PNG with the given prefix
+        prefix (str): Prefix for saved figures
+            
+    Returns:
+        Plots
+    """
+
+    if plot_blocks is None:
+        plot_blocks = ["field_map", "3D field_map", "modE_vs_tau", "transverse_profile", "widths", "flux", "errors"]
+
+    # Load & prepare all data
+    (
+        modE_xyz, vecE_xyz, vecS_xyz,
+        beam_xyz,
+        distance_along_beam, tau_len, tau_cutoff
+    ) = prepare_core_fields(res, msh, dt)
+
+    # Sampling tolerance (Cheap way of choosing the nearest point)
+    tol = grid_resolution / 2.0
+
+    # Extract |E| and E-vector along beam path
+    print("Sampling E field")
+    modE_list, vecE_array_beam, xyz_tree, modE_vals_all = sample_fields_along_beam(modE_xyz, vecE_xyz, beam_xyz)
+
+    # Build transverse sampling slices & profiles using gaussian fit
+    print("Building transverse E and widths")
+    fitted_widths, fit_params, chi2_list, offsets_per_tau, modE_profiles, mod_E_theoretical_profiles, poynting_flux_per_tau = build_transverse_profiles_and_fits(
+        dt,
+        beam_xyz, 
+        modE_xyz, 
+        vecS_xyz,
+        modE_list,
+        [0,0,1], 
+        grid_resolution=grid_resolution
+    )
+
+    # Plot
+    if "field_map" in plot_blocks:
+        plot_field_map(
+            modE_xyz=modE_xyz,
+            dt=dt,
+            tol=tol,
+            grid_resolution=grid_resolution,
+            norm_vec = normal_vector,
+            prefix=prefix,
+            save=save
+        )
+
+    if "3D field_map" in plot_blocks:
+        plot_field_with_beam(
+            dt=dt,
+            modE_xyz= modE_xyz,
+            norm_vec = normal_vector,
+            prefix=prefix,
+            save=save,
+            #sample_rate=0.10
+        )
+
+    if "modE_vs_tau" in plot_blocks:
+        plot_modE_vs_tau(
+            dt=dt,
+            modE_list=modE_list,
+            tau_cutoff=tau_cutoff,
+            distance_along_beam=distance_along_beam,
+            prefix=prefix,
+            save=save
+        )
+
+    if "transverse_profile" in plot_blocks:
+        plot_transverse_profiles(
+            offsets_per_tau, 
+            modE_profiles, 
+            fit_params, 
+            modE_theoretical_profiles=mod_E_theoretical_profiles,
+            beam_widths=fitted_widths,
+            prefix=prefix,
+            save=save
+        )
+
+    if "widths" in plot_blocks:
+        plot_widths(
+            dt=dt,
+            distance_along_beam=distance_along_beam,
+            tau_cutoff=tau_cutoff,
+            fitted_widths=fitted_widths,
+            chi2_list=chi2_list,
+            prefix=prefix,
+            save=save
+        )
+
+    if "flux" in plot_blocks:
+        plot_flux(
+            distance_along_beam=distance_along_beam,
+            poynting_flux_per_tau=poynting_flux_per_tau,
+            tau_cutoff=tau_cutoff,
+            prefix=prefix,
+            save=save
+        )
+
+    if "errors" in plot_blocks:
+        plot_errors(
+            dt=dt,
+            distance_along_beam=distance_along_beam,
+            tau_cutoff=tau_cutoff,
+            modE_list=modE_list,
+            fitted_widths=fitted_widths,
+            prefix=prefix,
+            save=save
+        )
+
+# Data preparation for analysis 
+def prepare_core_fields(res, msh, dt):
+    """
+    Load ERMES data in XYZ, map node fields, and build beam arrays
+    
+    Args:
+        res (str): Path to .res file (ERMES results)
+        msh (str): Path to .msh file (ERMES mesh)
+        dt (datatree): Scotty output file
+        
+    Returns:
+        modE_xyz
+        vecE_xyz
+        vecS_xyz
+        beam_xyz
+        ghat_xyz
+        distance_along_beam
+        tau_len
+        tau_cutoff
+    """
+    # Mesh nodes to XYZ
+    node_to_xyz = ERMES_nodes_to_XYZ(msh_file=msh)  # (Nnodes, 3)
+
+    # Results to node dicts
+    modE = ERMES_results_to_node(res_file=res, result_name="mod(E)")          # {node_id: scalar}
+    vecE = ERMES_results_to_node(res_file=res, result_name="rE")              # {node_id: (Ex,Ey,Ez)}
+    vecS = ERMES_results_to_node(res_file=res, result_name="Poynting_vector") # {node_id: (Sx,Sy,Sz)}
+
+    # Dicts to arrays (max node id used as length)
+    max_node = max(modE.keys())
+    modE_array = np.zeros(max_node + 1)
+    vecE_array = np.zeros((max_node + 1, 3))
+    vecS_array = np.zeros((max_node + 1, 3))
+
+    for i, val in modE.items():
+        modE_array[i] = val
+    for i, v in vecE.items():
+        vecE_array[i] = v
+    for i, v in vecS.items():
+        vecS_array[i] = v
+
+    # Truncate to common
+    common_nodes = min(node_to_xyz.shape[0], modE_array.shape[0])
+    modE_xyz = np.hstack((node_to_xyz[:common_nodes], modE_array[:common_nodes].reshape(-1, 1)))
+
+    common_nodes = min(node_to_xyz.shape[0], vecE_array.shape[0])
+    vecE_xyz = np.hstack((node_to_xyz[:common_nodes], vecE_array[:common_nodes]))
+
+    common_nodes = min(node_to_xyz.shape[0], vecS_array.shape[0])
+    vecS_xyz = np.hstack((node_to_xyz[:common_nodes], vecS_array[:common_nodes]))
+
+    # Beam and beam param from Scotty
+    tau_len = int(dt.inputs.len_tau.values)
+    tau_cutoff = int(dt.analysis.cutoff_index.values)
+    distance_along_beam = dt.analysis.distance_along_line.values  # (N,)
+
+    # Central beam in ERMES CARTESIAN. Same as RtZ_to_XYZ(beam_cartesian)
+    beam_xyz = np.column_stack([
+        dt.analysis.q_X.values,
+        dt.analysis.q_Z.values,
+        -dt.analysis.q_Y.values
+    ])
+    
+    return (modE_xyz, vecE_xyz, vecS_xyz,
+            beam_xyz,
+            distance_along_beam, tau_len, tau_cutoff)
+
+def sample_fields_along_beam(modE_xyz, vecE_xyz, beam_xyz):
+    """
+    Nearest sampling of |E| and E-vector at beam points.
+    
+    Args:
+        modE_xyz (array): modE as a function of X Y Z coordinates in ERMES
+        vecE_xyz (array): vecE as a function of X Y Z coordinates in ERMES
+        beam_xyz (array): beam coordinates in ERMES
+        tol (float): Tolerance of sampling
+        
+    Returns:
+        modE_list (array): modE along beam
+        vecE_array_beam (array): vecE along beam
+        tree (cKDTree): Datatree of all nodes as coordinates
+        modE_vals_all (array): modE everywhere
+    """
+    # Build KDTree over all nodes
+    xyz_all = vecE_xyz[:, :3]
+    tree = cKDTree(xyz_all)
+
+    # Field arrays
+    modE_vals_all = modE_xyz[:, 3]
+    vecE_vals_all = vecE_xyz[:, 3:6]
+
+    # Query all beam points at once
+    _, indices = tree.query(beam_xyz)
+
+    # Sample values at nearest nodes
+    modE_list = modE_vals_all[indices]
+    vecE_array_beam = vecE_vals_all[indices]
+
+    return np.array(modE_list), vecE_array_beam, tree, modE_vals_all
+
+def build_transverse_profiles_and_fits(dt, beam_xyz, modE_xyz, vecS_xyz, modE_list, normal_vec, grid_resolution):
+    """
+    Build and fit transverse |E| profiles along a beam in a 2D plane,
+    and compute the theoretical transverse field envelope from Scotty.
+    Also calculates the poynting flux within +-w
+
+    Args:
+        dt (datatree): Scotty output file.
+        beam_xyz (array): (N,3) beam center coordinates.
+        modE_xyz (ndaarrayrray): (M,4) ERMES data [x,y,z,|E|].
+        vecS_xyz (array): (M,6) ERMES [x,y,z,Sx,Sy,Sz] Poynting vectors.
+        modE_list (array): List of modE values for normalization
+        normal_vec (array-like): Plane normal vector in ERMES X Y Z.
+        grid_resolution (float): ERMES grid spacing (m).
+
+    Returns:
+        fitted_widths (array): (N,) fitted 1/e field widths from ERMES.
+        fit_params (array): (N,3) [A_fit, x0_fit, w_fit].
+        chi2_list (array): (N,) chi-squared values of fits.
+        offsets_per_tau (list): offsets along b-hat for each tau.
+        modE_profiles (list): sampled |E| profiles for each tau.
+        modE_theoretical_profiles (list): theoretical Scotty envelopes along beamfront.
+        poynting_flux_per_tau (array): Integrated poynting flux
+    """
+    n_hat = np.array(normal_vec, float)
+    n_hat /= np.linalg.norm(n_hat)
+    modE_coords = modE_xyz[:, :3]
+    modE_vals = modE_xyz[:, 3]
+    tree = cKDTree(modE_coords)
+    
+    S_coords = vecS_xyz[:, :3]
+    S_vals = vecS_xyz[:, 3:]
+    tree_S = cKDTree(S_coords)
+
+    poynting_flux_per_tau = []
+
+    N = len(beam_xyz)
+    fitted_widths, fit_params, chi2_list = [], [], []
+    offsets_per_tau, modE_profiles, modE_theoretical_profiles = [], [], []
+    poynting_flux_per_tau = []
+    
+    # From Scotty
+    ghat_cartesian = dt.analysis.g_hat_Cartesian  # in RtZ
+    Psi_3D_Cartesian = dt.analysis.Psi_3D_Cartesian  # in RtZ
+    # Since Scotty cartesian is RtZ
+    n_hat_RtZ = XYZ_to_RtZ(n_hat)
+
+    beam_width_at_tau = np.linalg.norm(
+        beam_width(ghat_cartesian, n_hat_RtZ, Psi_3D_Cartesian).values,
+        axis=1
+    )
+
+    ghat_xyz = np.apply_along_axis(
+        RtZ_to_XYZ, axis=1,
+        arr=ghat_cartesian.values /
+            np.expand_dims(dt.analysis.g_magnitude.values, axis=1)
+    )
+
+    modE_scotty = calc_Eb_from_scotty(
+        dt=dt,
+        E0=modE_list[0]
+    )
+
+    # Loop over tau
+    for i in range(N):
+        g = ghat_xyz[i]
+        g /= np.linalg.norm(g)
+
+        # Projection onto plane
+        g_proj = g - np.dot(g, n_hat) * n_hat
+        g_proj /= np.linalg.norm(g_proj)
+        b_hat = np.cross(n_hat, g_proj)
+        b_hat /= np.linalg.norm(b_hat)
+
+        # Offset sampling along ±width
+        width = beam_width_at_tau[i]
+        n_points = int(max(np.rint(2 * width / grid_resolution), 5))
+        offsets = np.linspace(-width, width, n_points)
+        offsets_per_tau.append(offsets)
+
+        sample_points = beam_xyz[i] + offsets[:, None] * b_hat[None, :]
+        _, idx = tree.query(sample_points)
+        profile = modE_vals[idx]
+        modE_profiles.append(profile)
+
+        # Theoretical profile from Scotty
+        Psi = Psi_3D_Cartesian.values[i]
+        P_perp = np.eye(3) - np.outer(g, g)
+        Psi_w = P_perp @ Psi @ P_perp # Project to plane perp to g
+        w_vecs = np.apply_along_axis(XYZ_to_RtZ, axis = 1, arr = np.outer(offsets, b_hat)) # Since Psi_w is in RtZ
+        quad = np.einsum('ni,ij,nj->n', w_vecs, np.imag(Psi_w), w_vecs)
+        envelope = np.exp(-0.5 * quad)
+        E_theory = modE_scotty[i] * envelope
+        modE_theoretical_profiles.append(E_theory)
+
+        # Gaussian Fit (ERMES data)
+        try:
+            p0 = [np.max(profile), 0.0, width]
+            popt, _ = curve_fit(gaussian_fit, offsets, profile, p0=p0)
+            A_fit, x0_fit, w_fit = popt
+            E_fit = gaussian_fit(offsets, *popt)
+            chi2 = np.sum((profile - E_fit)**2 / (E_fit + 1e-12))
+            fit_params.append([A_fit, x0_fit, w_fit])
+            fitted_widths.append(abs(w_fit))
+            chi2_list.append(chi2)
+        except RuntimeError:
+            fit_params.append([np.nan, np.nan, np.nan])
+            fitted_widths.append(np.nan)
+            chi2_list.append(np.nan)
+            
+        _, S_idx = tree_S.query(sample_points)
+        S_vecs = S_vals[S_idx]
+        S_dot_g = np.dot(S_vecs, g)
+        total_flux = np.trapz(S_dot_g, x=offsets)
+        poynting_flux_per_tau.append(total_flux)
+
+    return (np.array(fitted_widths),
+            np.array(fit_params),
+            np.array(chi2_list),
+            offsets_per_tau,
+            modE_profiles,
+            modE_theoretical_profiles,
+            np.array(poynting_flux_per_tau))
+
+# Plot functions
+def plot_field_map(modE_xyz, dt, tol, grid_resolution, norm_vec, prefix, save):
+    """
+    2D |E| map on z=0 (poloidal cross-section) with transparent-under colormap.
+    Uses nearest sampling onto a regular R-Z grid.
+    """
+    # Select near z=0 slice
+    mask = np.abs(modE_xyz[:, 2]) < tol
+    slice_pts = modE_xyz[mask]
+    if slice_pts.shape[0] < 10:
+        print("[field_map] Not enough points near z=0 to plot.")
+        return
+
+    R = slice_pts[1:, 0]
+    Z = slice_pts[1:, 1]
+    E = slice_pts[1:, 3]
+
+    # Build uniform grid in R-Z
+    Rmin, Rmax = np.min(R), np.max(R)
+    Zmin, Zmax = np.min(Z), np.max(Z)
+    nR = max(16, int((Rmax - Rmin) / grid_resolution))
+    nZ = max(16, int((Zmax - Zmin) / grid_resolution))
+    Ri = np.linspace(Rmin, Rmax, nR)
+    Zi = np.linspace(Zmin, Zmax, nZ)
+    RR, ZZ = np.meshgrid(Ri, Zi)
+
+    # KDTree nearest sampling
+    tree = cKDTree(np.column_stack([R, Z]))
+    dist, idx = tree.query(np.column_stack([RR.ravel(), ZZ.ravel()]))
+    
+    Ei = np.full(RR.size, np.nan)
+    valid = dist < grid_resolution * 1.5     # keep points only near mesh nodes (for edge, so padding of 1.5*res)
+    Ei[valid] = E[idx[valid]]
+    Ei = Ei.reshape(RR.shape)
+
+    # Colormap with white as 0
+    cmap = cm.get_cmap('bwr').copy() # Blue-White-Red
+    cmap.set_bad(color=(1, 1, 1, 0)) # transparent for masked NaN regions
+
+    # Dynamic normalization centered at zero
+    finite_vals = Ei[np.isfinite(Ei)]
+    vmax = np.nanpercentile(np.abs(finite_vals), 99)
+    norm = TwoSlopeNorm(vmin=-vmax, vcenter=0.0, vmax=vmax)
+    plt.figure(figsize=(6, 5))
+    pc = plt.pcolormesh(RR, ZZ, Ei, shading='auto', cmap=cmap, norm=norm)
+    plt.colorbar(pc, label='|E| (A.U.)')
+
+    # Poloidal flux surfaces
+    plot_poloidal_crosssection(dt=dt, ax=plt.gca(), highlight_LCFS=False)
+
+    # Scotty beam center and width in RZ (projection)
+    width = beam_width(dt.analysis.g_hat_Cartesian, XYZ_to_RtZ(norm_vec), dt.analysis.Psi_3D_Cartesian)
+    beam = dt.analysis.beam_cartesian 
+    beam_plus = beam + width
+    beam_minus = beam - width
+    plt.plot(beam_plus.sel(col_cart="X"), beam_plus.sel(col_cart="Z"), "--k", lw=1)
+    plt.plot(beam_minus.sel(col_cart="X"), beam_minus.sel(col_cart="Z"), "--k", lw=1, label="Beam width")
+    plt.plot(beam.sel(col_cart="X"), beam.sel(col_cart="Z"), "-", c='black', lw=1.5, label="Central ray")
+
+    plt.xlabel("R (m)")
+    plt.ylabel("Z (m)")
+    plt.title(r"|E|, Poloidal cross-section, $\theta_{pol}$="
+              + f"{handle_scotty_launch_angle_sign(dt=dt):.1f}°, "
+              + r"$\theta_{tor}$="
+              + f"{dt.inputs.toroidal_launch_angle_Torbeam.values}°"
+              + f",  f={dt.inputs.launch_freq_GHz.values} GHz")
+    plt.xlim(Rmin, Rmax)
+    plt.ylim(Zmin, Zmax)    
+    plt.gca().set_aspect('equal')
+    plt.legend()
+    
+
+    if save:
+        plt.tight_layout()
+        plt.savefig(f"{prefix}_field_map.png", dpi=200)
+    plt.show()
+
+def plot_field_with_beam(dt, modE_xyz, norm_vec = None, save=False, prefix="", sample_rate = 0.25):
+    """
+    Plot the 3D ERMES |E| field (voxel-style scatter) with beam geometry overlaid.
+
+    Args:
+        dt (datatree): Scotty output file
+        modE_xyz (ndarray): (N,4) array [x, y, z, |E|]
+        norm_vec (array): Normal vector for 2D plot ERMES
+        save (bool): Whether to save to file
+        prefix (str): Output prefix (if save=True)
+        sample_rate (float): Percentage of points to plot
+
+    Returns:
+        fig, ax: Matplotlib figure and 3D axis objects.
+    """
+    # Get the field
+    x, y, z, e = modE_xyz.T
+    e_norm = e / np.nanmax(e)
+    mask = e_norm > 0.01
+    
+    idx = np.where(mask)[0]
+    n_total = len(idx)
+    
+    n_keep = int(sample_rate*n_total)
+    if n_keep < n_total:
+        idx = np.random.choice(idx, n_keep, replace=False)
+        
+    finite_vals = e[np.isfinite(e)]
+    vmax = np.nanpercentile(np.abs(finite_vals), 99)
+    norm = TwoSlopeNorm(vmin=-vmax, vcenter=0.0, vmax=vmax)
+
+    cmap = cm.get_cmap('bwr').copy()
+    cmap.set_bad(color=(1, 1, 1, 0))  # transparent for masked / NaN region
+
+    # Set up 3D figure
+    fig = plt.figure(figsize=(12, 10))
+    ax = fig.add_subplot(111, projection='3d')
+
+    # Field visualization (voxel-style scatter) for 3D
+    sc = ax.scatter(x[idx], y[idx], z[idx],
+                    c=e[idx], cmap=cmap, norm = norm, alpha=0.2, s=0.5,
+                    label='ERMES |E| Field')
+    
+    # Overlay beam geometry
+    width = beam_width(dt.analysis.g_hat_Cartesian, XYZ_to_RtZ(norm_vec), dt.analysis.Psi_3D_Cartesian)
+    beam = dt.analysis.beam_cartesian 
+    beam_plus = beam + width
+    beam_minus = beam - width
+    plt.plot(beam_plus.sel(col_cart="X"), beam_plus.sel(col_cart="Z"), beam_plus.sel(col_cart="Y"),"--k", lw=2)
+    plt.plot(beam_minus.sel(col_cart="X"), beam_minus.sel(col_cart="Z"), beam_minus.sel(col_cart="Y"), "--k", lw=2, label="Beam width")
+    plt.plot(beam.sel(col_cart="X"), beam.sel(col_cart="Z"), beam.sel(col_cart="Y"),  "-", c='black', lw=4, label="Central ray")
+
+
+    # Labels and formatting
+    ax.set_xlabel("X (m)")
+    ax.set_ylabel("Y (m)")
+    ax.set_zlabel("Z (m)")
+    zmin, zmax = ax.get_zlim()
+    ax.set_zticks([zmin, zmax])
+    ax.set_title("ERMES |E| Field with Beam Geometry")
+    ax.legend()
+    ax.set_aspect('equal')
+    ax.view_init(elev=33, azim=45, roll=123)
+    fig.colorbar(sc, ax=ax, shrink=0.6, label='|E| (A.U.)')
+
+    # Optional save/show
+    if save:
+        plt.tight_layout()
+        plt.savefig(f"{prefix}_3D_field_map.png", dpi=200)
+    plt.show()
+
+def plot_modE_vs_tau(dt, modE_list, tau_cutoff, distance_along_beam, prefix, save):
+    """
+    |E| (ERMES vs Scotty) along beam distance.
+    """
+    theoretical_modE_tau = calc_Eb_from_scotty(
+        dt=dt,
+        E0=modE_list[0]
+    )
+    #smoothed_modE_list = get_moving_RMS(modE_list, 40)
+
+    plt.figure(figsize=(7, 4))
+    plt.scatter(distance_along_beam, modE_list, s=12, color='red', label='ERMES')
+    plt.plot(distance_along_beam, theoretical_modE_tau, '--', color='orange', label='Scotty')
+    plt.vlines(distance_along_beam[tau_cutoff], *plt.gca().get_ylim(), linestyles='--', color='blue')
+    plt.xlabel("Distance along central ray (m)")
+    plt.ylabel("|E| (A.U.)")
+    plt.title("|E| along central ray")
+    plt.ylim(bottom=0)
+    plt.legend()
+    plt.tight_layout()
+    if save:
+        plt.savefig(f"{prefix}_modE_vs_tau.png", dpi=200)
+    plt.show()
+
+def plot_transverse_profiles(
+    offsets_per_tau,
+    modE_profiles,
+    fit_params,
+    modE_theoretical_profiles=None,
+    beam_widths=None,
+    save: bool = False,
+    prefix: str = ""
+):
+    """
+    Interactive plot of ERMES |E| transverse profiles, Gaussian fits,
+    and Scotty theoretical |E| envelopes.
+
+    Args:
+        offsets_per_tau (list): list of 1D arrays of offsets along transverse axis.
+        modE_profiles (list): list of 1D arrays of sampled |E| values from ERMES.
+        fit_params (ndarray): (N,3) fitted Gaussian parameters [A, x0, w].
+        modE_theoretical_profiles (list or None): list of 1D arrays of theoretical |E| profiles from Scotty.
+        beam_widths (ndarray or None): optional fitted widths for marking ±w.
+        save (bool): Whether to save figure.
+        prefix (str): Prefix for save name.
+    """
+    N = len(offsets_per_tau)
+    if N == 0:
+        print("No profiles to plot.")
+        return
+
+    # Scaling for axes
+    global_maxE = np.nanmax([np.nanmax(p) for p in modE_profiles])
+    if modE_theoretical_profiles is not None:
+        global_maxE = max(global_maxE, np.nanmax([np.nanmax(p) for p in modE_theoretical_profiles]))
+    global_max_offset = np.nanmax([np.nanmax(np.abs(o)) for o in offsets_per_tau])
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+    plt.subplots_adjust(bottom=0.25)
+
+    i0 = 0
+    x0 = offsets_per_tau[i0]
+    y0 = modE_profiles[i0]
+
+    scatter = ax.scatter(x0, y0, color='red', s=15, label='ERMES samples')
+    E_fit0 = gaussian_fit(x0, *fit_params[i0])
+    line_fit, = ax.plot(x0, E_fit0, color='green', lw=3, label='Gaussian fit')
+
+    # Add Scotty theoretical curve (if available)
+    if modE_theoretical_profiles is not None:
+        y_theory0 = modE_theoretical_profiles[i0]
+        line_theory, = ax.plot(x0, y_theory0, '--', color='orange', label='Scotty')
+    else:
+        line_theory = None
+
+    # Labels and limits
+    ax.set_xlabel('Offset from beam center (m)')
+    ax.set_ylabel('|E| (A.U.)')
+    ax.set_title(r'Transverse profile at $\tau$ = ' + f'{i0}')
+    ax.legend()
+    ax.set_xlim(-global_max_offset, global_max_offset)
+    ax.set_ylim(0, 1.1 * global_maxE)
+
+    # Slider setup
+    ax_slider = plt.axes([0.2, 0.1, 0.6, 0.03])
+    slider = Slider(ax_slider, 'τ index', 0, N - 1, valinit=i0, valstep=1)
+
+    def update(val):
+        j = int(slider.val)
+        x = offsets_per_tau[j]
+        y = modE_profiles[j]
+
+        # Update ERMES data
+        scatter.set_offsets(np.column_stack([x, y]))
+
+        # Update Gaussian fit
+        y_fit = gaussian_fit(x, *fit_params[j])
+        line_fit.set_data(x, y_fit)
+
+        # Update Scotty theoretical curve
+        if line_theory is not None:
+            y_theory = modE_theoretical_profiles[j]
+            line_theory.set_data(x, y_theory)
+
+        ax.set_title(r'Transverse profile at $\tau$ = ' + f'{j}')
+        fig.canvas.draw_idle()
+
+    slider.on_changed(update)
+
+    if save:
+        plt.savefig(f"{prefix}_transverse_profile.png", dpi=200)
+
+    plt.show()
+
+def plot_widths(dt, distance_along_beam, tau_cutoff, fitted_widths, chi2_list, prefix, save):
+    """
+    Fitted vs Scotty widths + chi^2 vs distance (stacked).
+    """
+    width = beam_width(dt.analysis.g_hat, np.array([0.0, 1.0, 0.0]), dt.analysis.Psi_3D)
+    width_norm = np.linalg.norm(width.values, axis=1)
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 6), sharex=True, height_ratios=[2, 1])
+
+    ax1.plot(distance_along_beam, width_norm, '--', label="Scotty width", color='orange')
+    ax1.plot(distance_along_beam, np.array(fitted_widths), label="Fitted ERMES width", color='red')
+    ax1.vlines(distance_along_beam[tau_cutoff], *ax1.get_ylim(), linestyles='--', color='blue')
+    ax1.set_ylabel("Width (m)")
+    ax1.set_title("Beam widths")
+    ax1.legend()
+
+    ax2.plot(distance_along_beam, chi2_list, label=r"$\chi^2$ of ERMES fit", color='red')
+    ax2.vlines(distance_along_beam[tau_cutoff], *ax2.get_ylim(), linestyles='--', color='blue')
+    ax2.set_xlabel("Distance along central ray (m)")
+    ax2.set_ylabel(r"$\chi^2$")
+    ax2.legend()
+
+    plt.tight_layout()
+    if save:
+        plt.savefig(f"{prefix}_widths_and_chi2.png", dpi=200)
+    plt.show()
+
+def plot_flux(distance_along_beam, poynting_flux_per_tau, tau_cutoff, prefix, save):
+    """
+    Poynting flux S dot g integrated across beamfront vs distance.
+    """
+    plt.figure(figsize=(7, 4))
+    plt.scatter(distance_along_beam, poynting_flux_per_tau, color='red', s=15)
+    plt.vlines(distance_along_beam[tau_cutoff], *plt.gca().get_ylim(), linestyles='--', color='blue')
+    plt.ylim(0, max(1.1, 1.1*np.max(poynting_flux_per_tau)))
+    plt.xlabel("Distance along central ray (m)")
+    plt.ylabel("Power flux (arb. units)")
+    plt.title("Poynting flux across beamfront")
+    plt.tight_layout()
+    if save:
+        plt.savefig(f"{prefix}_poynting_flux.png", dpi=200)
+    plt.show()
+
+def plot_errors(dt, distance_along_beam, tau_cutoff, modE_list, fitted_widths, prefix, save):
+    """
+    Relative errors for |E| and width vs Scotty
+    """
+    # |E| error
+    theoretical_modE_tau = calc_Eb_from_scotty(
+        dt=dt,
+        E0=modE_list[0]
+    )
+    smoothed_modE_list = get_moving_RMS(modE_list, 40)
+    err_modE = get_relative_error(smoothed_modE_list, theoretical_modE_tau)
+
+    plt.figure(figsize=(7, 3.6))
+    plt.scatter(distance_along_beam, err_modE, color='red', s=14)
+    plt.vlines(distance_along_beam[tau_cutoff], *plt.gca().get_ylim(), linestyles='--', color='blue')
+    plt.xlabel("Distance along central ray (m)")
+    plt.ylabel("Rel. error (|E|)")
+    plt.title("Relative error: ERMES vs Scotty |E|")
+    plt.tight_layout()
+    if save:
+        plt.savefig(f"{prefix}_error_modE.png", dpi=200)
+    plt.show()
+
+    # Width error
+    width = beam_width(dt.analysis.g_hat, np.array([0.0, 1.0, 0.0]), dt.analysis.Psi_3D)
+    width_norm = np.linalg.norm(width.values, axis=1)
+    smoothed_width_list = get_moving_RMS(fitted_widths, 40)
+    err_width = get_relative_error(smoothed_width_list, width_norm)
+
+    plt.figure(figsize=(7, 3.6))
+    plt.scatter(distance_along_beam, err_width, color='red', s=14)
+    plt.vlines(distance_along_beam[tau_cutoff], *plt.gca().get_ylim(), linestyles='--', color='blue')
+    plt.xlabel("Distance along central ray (m)")
+    plt.ylabel("Rel. error (width)")
+    plt.title("Relative error: ERMES vs Scotty beam width")
+    plt.tight_layout()
+    if save:
+        plt.savefig(f"{prefix}_error_width.png", dpi=200)
+    plt.show()
+
+    
 if __name__ == '__main__':
     # MAST-U
     """
@@ -1544,10 +2185,10 @@ if __name__ == '__main__':
     #"""
     
     #DIII-D
-    #"""
+    """
     get_ERMES_parameters(
         dt=load_scotty_data('\\Output\\scotty_output_tor_ideal__freq72.5_pol-7.0_tor1.5726_rev.h5'),
-        prefix="DIII-D_new_test_save_",
+        prefix="DIII-D_",
         #launch_positon=[3.01346,0,-0.09017],
         dist_to_ERMES_port=0.66,
         plot=True,
@@ -1595,6 +2236,17 @@ if __name__ == '__main__':
     )
     
     #"""
+    
+    # Try out the 3D one with 2D known results
+    ERMES_results_to_plots_3D(
+        res="\\Final_Ermes_output\\DIII-D_7_degree_oblique.post.res", 
+        msh="\\Final_Ermes_output\\DIII-D_7_degree_oblique.post.msh",
+        dt=load_scotty_data('\\Output\\scotty_output_freq72.5_pol-7.0_rev.h5'),
+        grid_resolution=4e-4,
+        normal_vector=[-0.0191506, 0.13483198, 0.9906834],
+        plot_blocks=["field_map", "3D field_map", "modE_vs_tau", "transverse_profile", "widths", "flux", "errors"],
+        save=False
+    )
     
     """
     # Plotting stuffs to get summary of errors
