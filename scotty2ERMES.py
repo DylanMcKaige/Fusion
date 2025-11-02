@@ -27,7 +27,7 @@ BEAM referes to xhat yhat ghat
 
 Written by Dylan James Mc Kaige
 Created: 16/5/2025
-Updated: 28/10/2025
+Updated: 2/11/2025
 """
 import os, json, datatree
 import numpy as np
@@ -361,7 +361,7 @@ def get_limits_from_scotty(dt: datatree, padding_R: float = 0.03, padding_Z: flo
         # In ERMES cartesian frame
         min_x, max_x = (np.min(combined_beam_R) - padding_R), (np.max(combined_beam_R) + padding_R)
         min_y, max_y = (np.min(combined_beam_Z) - padding_Z), (np.max(combined_beam_Z) + padding_Z)
-        min_z, max_z = (np.min(combined_beam_Y) - padding_t), (np.max(combined_beam_Y) + padding_t)
+        min_z, max_z = -(np.min(combined_beam_Y) - padding_t), -(np.max(combined_beam_Y) + padding_t)
     
     return np.array([min_x, max_x, min_y, max_y, min_z, max_z])
 
@@ -447,10 +447,6 @@ def get_ERMES_parameters(
     xp, yp = launch_R - dist_to_ERMES_port*cos(launch_angle_pol_rad), launch_Z + dist_to_ERMES_port*sin(launch_angle_pol_rad) 
     xp0, yp0 = xp - w_ERMES/2*sin(launch_angle_pol_rad), yp - w_ERMES/2*cos(launch_angle_pol_rad) # Bottom
     xp1, yp1 = xp + w_ERMES/2*sin(launch_angle_pol_rad), yp + w_ERMES/2*cos(launch_angle_pol_rad) # Top
-    
-    # 3D port calculations (project from 2D centre based on toroidal launch angle)
-    port_delta_z = w_ERMES/2
-    port_padded_delta_z = w_ERMES*1.1/2
     
     # Slightly wider to minimize numerical errors at boundary of port
     xp0_ext, yp0_ext = xp - w_ERMES*1.1/2*sin(launch_angle_pol_rad), yp - w_ERMES*1.1/2*cos(launch_angle_pol_rad) # Bottom
@@ -571,7 +567,7 @@ def get_ERMES_parameters(
         if vec_vals.shape[1] != 3:
             raise ValueError("`points` must have shape (N, 3) for x, y, z coordinates")
 
-        file_path = f"{path}{filename}_ERMES_params.txt"
+        file_path = f"{path}{filename}.txt"
 
         # Write 3D points
         header_points = (
@@ -621,6 +617,12 @@ def get_ERMES_parameters(
     
     # Beam params
     params_val = np.array([
+        min_x,
+        max_x,
+        min_y,
+        max_y,
+        min_z,
+        max_z,
         launch_angle_pol, 
         launch_angle_tor, 
         launch_beam_width, 
@@ -638,6 +640,12 @@ def get_ERMES_parameters(
         phi_E_perp,
     ])
     params_names = np.array([
+        'Min x(R)    ',
+        'Max x(R)    ',
+        'Min y(Z)    ',
+        'Max y(Z)    ',
+        'Min z(t)    ',
+        'Max z(t)    ',
         'Poloidal Launch Angle    ', 
         'Toroidal Launch Angle    ', 
         'Launch Beam Width    ', 
@@ -892,7 +900,7 @@ def compute_torsion(dt: datatree = None):
     
     return tau
 
-def ERMES_nodes_to_XYZ(msh_file: str):
+def ERMES_nodes_to_XYZ(msh_file: str, show_progress = True):
     """
     Load in the ASCII .msh file to read each node as nodeID and return the cartesian cooridnates of that node in xyz. 
     Note that to allow indexing by node, an additional (0,0,0) node is created.
@@ -905,36 +913,54 @@ def ERMES_nodes_to_XYZ(msh_file: str):
     """
     print("Reading ERMES msh file")
     # Node ID as XYZ coords
-    with open(os.getcwd() + msh_file, 'r') as f:
-        lines = f.readlines()
+    path = os.getcwd() + msh_file
+    print("Reading ERMES .msh file (streaming mode)")
 
-    coords = {}
     reading = False
 
-    for line in lines:
-        line = line.strip()
-        if line.startswith("Coordinates"):
-            reading = True
-            continue
-        if line.startswith("End Coordinates"):
-            break
-        if reading:
-            parts = line.split()
-            if len(parts) == 4:
-                node_id = int(parts[0])
-                x, y, z = map(float, parts[1:])
-                coords[node_id] = [x, y, z]
+    # First pass: determine maximum node ID for allocation (lightweight scan)
+    max_id = 0
+    with open(path, 'r') as f:
+        iterator = f
+        if show_progress:
+            iterator = tqdm(f, desc="Reading mesh nodes", ncols=100)
+        for line in iterator:
+            if line.startswith("Coordinates"):
+                reading = True
+                continue
+            if line.startswith("End Coordinates"):
+                break
+            if reading:
+                try:
+                    node_id = int(line.split()[0])
+                    if node_id > max_id:
+                        max_id = node_id
+                except Exception:
+                    continue
 
-    # Determine max node ID to allocate array correctly
-    max_node_id = max(coords.keys())
-    node_to_xyz = np.zeros((max_node_id + 1, 3)) # + 1 to allow indexing by node ID, note that this creates a (0,0,0) node 0
+    node_to_xyz = np.zeros((max_id + 1, 3), dtype=np.float64) # +1 to allow indexing by nodeID
 
-    for node_id, xyz in coords.items():
-        node_to_xyz[node_id] = xyz
-    
+    # Second pass: fill directly
+    with open(path, 'r') as f:
+        reading = False
+        iterator = f
+        if show_progress:
+            iterator = tqdm(f, desc="Loading mesh nodes", ncols=100)
+        for line in iterator:
+            if line.startswith("Coordinates"):
+                reading = True
+                continue
+            if line.startswith("End Coordinates"):
+                break
+            if reading:
+                parts = line.split()
+                if len(parts) == 4:
+                    node_id = int(parts[0])
+                    node_to_xyz[node_id] = [float(parts[1]), float(parts[2]), float(parts[3])]
+
     return node_to_xyz
         
-def ERMES_results_to_node(res_file: str, result_name: str):
+def ERMES_results_to_node(res_file: str, result_name: str, show_progress = True):
     """
     Load in the .res file to read each result as nodeID and return the value of result_name at that node. Supports scalar and vector results
     
@@ -945,54 +971,60 @@ def ERMES_results_to_node(res_file: str, result_name: str):
     Returns:
         result (dict): Dictionary of result value (scalar or vector) with nodeID as the key
     """
+    path = os.getcwd() + res_file
     print(f"Reading ERMES res file for '{result_name}' results")
     
-    with open(os.getcwd() + res_file, 'r') as f:
-        lines = f.readlines()
-
     result = {}
     reading = False
     inside_block = False
+    num_entries = 0
 
-    for line in lines:
-        line = line.strip()
-        
-        # Start of the correct block
-        if line.startswith(f'Result "{result_name}"'):
-            inside_block = True
-            continue
+    # Stream read
+    with open(path, 'r') as f:
+        iterator = tqdm(f, desc=f"Parsing {result_name}", ncols=100) if show_progress else f
+        for line in iterator:
+            line = line.strip()
 
-        # Inside correct block, look for Values
-        if inside_block and line.startswith("Values"):
-            reading = True
-            continue
+            # Skip blank lines or comments
+            if not line or line.startswith("#"):
+                continue
 
-        # End reading values
-        if reading and line.startswith("End Values"):
-            break
+            # Detect result block
+            if line.startswith(f'Result "{result_name}"'):
+                inside_block = True
+                continue
 
-        # Read values line
-        if reading:
-            parts = line.split()
-            
-            # Scalar?
-            if len(parts) == 2:
-                node_id = int(parts[0])
-                value = float(parts[1])
-                result[node_id] = value
-                
-            # Vector?
-            elif len(parts) == 4:
-                node_id = int(parts[0])
-                vector = np.array(list(map(float, parts[1:])))
-                result[node_id] = vector
-                
-            else: 
-                print("Did not expect to reach this, please fix")
-                
-    if inside_block == False:
-        print(f"Invalid result name '{result_name}', consult ERMES 20.0 documentation or your res file on output result names, setting results to 0 to allow for other plots")
-    
+            # Start of Values
+            if inside_block and line.startswith("Values"):
+                reading = True
+                continue
+
+            # End of Values
+            if reading and line.startswith("End"):
+                reading = False
+                break
+
+            # Actual data
+            if reading:
+                parts = line.split()
+                if len(parts) == 2:
+                    try:
+                        node_id = int(parts[0])
+                    except ValueError:
+                        print(line)
+                    result[node_id] = float(parts[1])
+                    num_entries += 1
+                elif len(parts) == 4:
+                    node_id = int(parts[0])
+                    result[node_id] = np.fromstring(" ".join(parts[1:]), sep=' ')
+                    num_entries += 1
+                else:
+                    num_entries += 1
+
+    if not inside_block:
+        print(f"[Warning] '{result_name}' not found in file; returning empty dict.")
+
+    print(f"Loaded {num_entries:,} entries for '{result_name}'.")
     return result
 
 def gaussian_fit(x, A, x0, w):
@@ -1084,387 +1116,6 @@ def get_moving_RMS(observed_data, window_size: int):
     #smoothed_data = np.sqrt(np.convolve(observed_data2, kernel, mode='same'))
     
     return smoothed_data
-
-# TO BE DEPRECATED
-def ERMES_results_to_plots(res: str = None, msh: str = None, dt: datatree = None, plot: bool = False, save: bool = True, grid_resolution: float = 8e-4, prefix: str = "prefix"):
-    """
-    Plot ERMES modE in R,Z with Scotty overlaid, Plot ERMES modE, rE vec, transverse modE along central ray with Scotty calculations where applicable.
-    
-    Args:
-        res (str): path to the .res file
-        msh (str): path to the .msh file
-        dt (datatree): Scotty output file
-        plot (bool): Plot it!
-        save (bool): Save the error results
-        grid_resolution (float): Resolution of grid used for meshing
-        prefix (str): Prefix for error file names
-    """
-    # Node ID as XYZ coords
-    node_to_xyz = ERMES_nodes_to_XYZ(msh_file=msh)
-        
-    # modE as nodeID
-    modE = ERMES_results_to_node(res_file=res, result_name="mod(E)")   
-
-    # rE as nodeID
-    vecE = ERMES_results_to_node(res_file=res, result_name="rE")
-    
-    # Poynting vec as nodeID
-    vecS = ERMES_results_to_node(res_file=res, result_name="Poynting_vector")
-    
-    # Convert to array
-    max_node = max(modE.keys()) # all results will have the same number of nodes
-    modE_array = np.zeros(max_node + 1)
-    vecE_array = np.zeros((max_node + 1, 3))
-    vecS_array = np.zeros((max_node + 1, 3))
-    for i, val in modE.items():
-        modE_array[i] = val
-    for i, vec in vecE.items():
-        vecE_array[i] = vec
-    for i, vec in vecS.items():
-        vecS_array[i] = vec
-    
-    
-    # modE convert to xyz
-    common_nodes = min(node_to_xyz.shape[0], modE_array.shape[0])
-    modE_xyz = np.hstack((node_to_xyz[:common_nodes], modE_array[:common_nodes].reshape(-1, 1)))
-
-    # vecE convert to xyz
-    common_nodes = min(node_to_xyz.shape[0], vecE_array.shape[0])
-    vecE_xyz = np.hstack((node_to_xyz[:common_nodes], vecE_array[:common_nodes]))
-    
-    # vecS convert to xyz
-    common_nodes = min(node_to_xyz.shape[0], vecS_array.shape[0])
-    vecS_xyz = np.hstack((node_to_xyz[:common_nodes], vecS_array[:common_nodes]))
-    
-    # Central beam
-    tau_len = dt.inputs.len_tau.values
-    tau_cutoff = dt.analysis.cutoff_index.values
-    beam_RZ = np.column_stack([dt.analysis.q_R.values,dt.analysis.q_Z.values])
-    beam_xyz = np.column_stack([dt.analysis.q_R.values,dt.analysis.q_Z.values, -dt.analysis.beam_cartesian.values[:, 1]]) # If going 3D
-
-    # Extract vecE and modE along central ray within tolerance
-    tol = grid_resolution/2 # Half of mesh size
-    
-    modE_list = []
-    data_xy = modE_xyz[1:, :2]
-    modE_vals = modE_xyz[1:, 3]
-    
-    # Extract vecE along central ray within tolerance
-    vecE_list = []
-    data_xy = vecE_xyz[1:, :2]
-    data_xyz = vecE_xyz[1:, :3]
-    vecE_vecs = vecE_xyz[1:, 3:6]
-    
-    # to get only modE along the central ray
-    for xq, yq, zq in beam_xyz:
-        dx = np.abs(data_xyz[:, 0] - xq)
-        dy = np.abs(data_xyz[:, 1] - yq)
-        #dz = np.abs(data_xyz[:, 2] - zq)
-        mask = (dx <= tol) & (dy <= tol)# & (dz <= tol)
-
-        if np.any(mask):
-            modE_list.append(modE_vals[mask][0]) # First match
-            vecE_list.append(vecE_vecs[mask][0]) # First match
-        else:
-            modE_list.append(0)
-            vecE_list.append(np.array([0.0, 0.0, 0.0]))
-
-    vecE_array_beam = np.array(vecE_list) # convert to array
-    
-    # Get beam width for gaussian x-section, This needs to be updated to work for 3D and 2D. And I think this can be tidied up a lot
-    tau_vals = np.arange(len(beam_RZ)) # Take this from Scotty instead for consistency
-    width_factor = 2 # n times of the width to visualize
-    distance_along_beam = dt.analysis.distance_along_line.values
-    width_at_tau = np.linalg.norm(
-                                np.array([
-                                    beam_width(dt.analysis.g_hat, np.array([0.0, 1.0, 0.0]), dt.analysis.Psi_3D).sel(col="R"), 
-                                    beam_width(dt.analysis.g_hat, np.array([0.0, 1.0, 0.0]), dt.analysis.Psi_3D).sel(col="Z")]).T, 
-                                axis=1, 
-                                keepdims=False
-                                )*width_factor
-    no_of_points_width_at_tau = (np.rint(width_at_tau/tol))
-    beam_width_range = [np.linspace(-width_at_tau[i], width_at_tau[i], int(no_of_points_width_at_tau[i])) for i in range(tau_len)]
-    ghat_xyz = np.apply_along_axis(RtZ_to_XYZ, axis=1, arr=dt.analysis.g_hat.values)
-
-    beamfront_vector = np.cross(np.array([0.0, 0.0, 1.0]), ghat_xyz)
-    beamfront_vector /= np.linalg.norm(beamfront_vector, axis=1, keepdims=True)
-
-    sample_points_per_tau = []
-    theoretical_transverse_modE_tau = []
-    offsets_per_tau = []
-
-    for i in range(tau_len):
-        Psi = dt.analysis.Psi_3D_Cartesian.values[i]
-
-        offset = np.linspace(-width_at_tau[i], width_at_tau[i], int(no_of_points_width_at_tau[i]))
-        offsets_per_tau.append(offset)
-        offset_vecs = offset[:, None] * beamfront_vector[i] # shape (num_samples, 3), this is w vec in cartesian x,y plane
-        sample_points = beam_xyz[i] + offset_vecs # shape (num_samples, 3)
-
-        quad_vals = np.einsum('ni,ij,nj->n', offset_vecs, Psi, offset_vecs)
-        envelope = np.exp(-0.5*np.imag(quad_vals))
-        
-        theoretical_transverse_modE_tau.append(modE_list[i]*envelope)
-        sample_points_per_tau.append(sample_points)
-        
-    xyz_grid = modE_xyz[:, :3]
-    modE_vals = modE_xyz[:, 3]
-    xyz_tree = cKDTree(xyz_grid)
-
-    gaussian_modE_profiles = []
-    for points in sample_points_per_tau:
-        _, indices = xyz_tree.query(points)
-        gaussian_modE_profiles.append(modE_vals[indices])
-    
-    # Fitted widths
-    fitted_widths, fit_params, chi2_list = fit_gaussian_width(offsets_per_tau, gaussian_modE_profiles)
-    
-    # Get the poynting flux
-    vecS_tree = cKDTree(vecS_xyz[:, :3])
-    vecS_vals = vecS_xyz[:, 3:] # Sx, Sy, Sz
-        
-    poynting_flux_per_tau = []
-
-    for i in range(tau_len):
-        points = sample_points_per_tau[i] # shape (num_samples, 3)
-        ghat = ghat_xyz[i] # shape (3,)
-
-        # Find nearest vecS values
-        _, indices = vecS_tree.query(points)
-        S_vecs = vecS_vals[indices] # shape (num_samples, 3)
-
-        # Compute S · g
-        S_dot_g = np.dot(S_vecs, ghat) # shape (num_samples,)
-
-        # Integrate using trapezoidal rule over transverse line
-        dx = grid_resolution # approx element width
-        total_flux = np.trapz(S_dot_g, dx=dx)
-        
-        poynting_flux_per_tau.append(total_flux)
-    
-    # Plot it!
-    if plot:
-        print("Plotting modE in R,Z from ERMES 20.0 and Scotty")
-        # Plot modE over R Z
-        # Filter points near desired z-slice, arrays start from 1 cus first node in 0,0,0
-        mask = np.where(np.abs(modE_xyz[1:, 2]) < tol)
-        filtered = modE_xyz[mask]
-
-        # Get the filtered values (only the level set of z = 0.0)
-        x = filtered[1:, 0]
-        y = filtered[1:, 1]
-        modE = filtered[1:, 3]
-
-        # Create grid
-        grid_res = int((np.max(data_xy[1:, 0]) - np.min(data_xy[1:, 0]))/(grid_resolution))
-        xi = np.linspace(np.min(x), np.max(x), grid_res)
-        yi = np.linspace(np.min(y), np.max(y), grid_res)
-        X, Y = np.meshgrid(xi, yi)
-
-        # Interpolate modE onto grid
-        Z = griddata((x, y), modE, (X, Y), method='linear', fill_value=np.nan) # nan so it is white
-
-        # Plot
-        plt.figure(figsize=(6, 5))
-        c = plt.pcolormesh(X, Y, Z, shading='auto', cmap='YlOrRd')
-        plt.xlabel("R (m)")
-        plt.ylabel("Z (m)")
-        plt.title(r"Results for ERMES 20.0 & Scotty, $\theta_{pol}$="
-                  + f"{handle_scotty_launch_angle_sign(dt=dt):.1f}" 
-                  + r"$^\circ$" 
-                  + f", f={dt.inputs.launch_freq_GHz.values}GHz")
-        plt.colorbar(c, label='|E| (A.U.)')
-        
-        # Plot flux surfaces to 'visualize' the plasma
-        plot_poloidal_crosssection(dt=dt, ax=plt.gca(), highlight_LCFS=False)
-        
-        # Plot Scotty results
-        width = beam_width(dt.analysis.g_hat, np.array([0.0, 1.0, 0.0]), dt.analysis.Psi_3D)
-        beam = dt.analysis.beam
-        beam_plus = beam + width
-        beam_minus = beam - width
-        
-        plt.plot(beam_plus.sel(col="R"), beam_plus.sel(col="Z"), "--k")
-        plt.plot(beam_minus.sel(col="R"), beam_minus.sel(col="Z"), "--k", label="Beam width")
-        plt.plot(beam.sel(col="R"), beam.sel(col="Z"), "-", c='black', label = "Central ray")
-        
-        plt.xlim(np.min(x), np.max(x))
-        plt.ylim(np.min(y), np.max(y))
-        plt.legend()
-        plt.gca().set_aspect('equal')
-        plt.show()
-        
-        print("Plotting modE vs tau from ERMES and Scotty")
-        # Plot modE vs tau
-        plt.scatter(distance_along_beam, modE_list, marker='.', color = 'red', label='ERMES 20.0')
-        theoretical_modE_tau = calc_Eb_from_scotty(dt=dt, wx=dt.inputs.launch_beam_width.values, wy=dt.inputs.launch_beam_width.values, E0 = modE_list[0])
-        plt.scatter(distance_along_beam, theoretical_modE_tau, marker='.', color = 'orange', label='Scotty')
-        smoothed_modE_list = get_moving_RMS(modE_list, 40)
-        #plt.plot(distance_along_beam, smoothed_modE_list, 'g-', label="Smoothed ERMES")
-        plt.vlines(distance_along_beam[tau_cutoff], ymin=plt.gca().get_ylim()[0], ymax = plt.gca().get_ylim()[1], linestyles='--', color='blue')
-        
-        plt.xlabel("Distance along central ray (m)")
-        plt.ylabel("|E| (A.U.)")
-        plt.title(r"|E| vs Distance along central ray, $\theta_{pol}$="
-                  + f"{handle_scotty_launch_angle_sign(dt=dt):.1f}"
-                  + r"$^\circ$" 
-                  + f", f={dt.inputs.launch_freq_GHz.values}GHz")
-        plt.xlim(0, distance_along_beam[-1])
-        plt.ylim(bottom = 0)
-        plt.tight_layout()
-        plt.legend()
-        plt.show()
-        
-        # Relative err of modE
-        err_modE = get_relative_error(smoothed_modE_list, theoretical_modE_tau)
-        plt.scatter(distance_along_beam, err_modE, color = 'red', s = 15)
-        plt.xlabel("Distance along central ray (m)")
-        plt.ylabel("Relative error")
-        plt.title("Relative error between ERMES 20.0 and Scotty |E| along central ray")
-        plt.show()
-        
-        print("Plotting rE vector vs tau from ERMES 20.0 and Scotty")
-        # Define the 3D transverse basis
-        e_y = np.array([0.0, 1.0, 0.0])
-        t2 = np.cross(ghat_xyz, e_y)
-        t2 = t2/np.linalg.norm(t2, axis=1, keepdims=True)
-        t1 = np.tile(e_y, (ghat_xyz.shape[0], 1))
-        
-        # Project vecE onto this transverse plane
-        E_t1 = np.einsum('ij,ij->i', vecE_array_beam, t1) # projection onto e_y (Ez)
-        E_t2 = np.einsum('ij,ij->i', vecE_array_beam, t2) # projection onto transverse axis
-
-        # Reconstruct transverse vectors (for quiver plotting)
-        E_transverse = np.stack([E_t2, E_t1], axis=1)
-
-        # Set up figure and axis
-        fig, ax = plt.subplots()
-        plt.subplots_adjust(bottom=0.25)
-
-        q = ax.quiver(0, 0, E_transverse[0, 0], E_transverse[0, 1], angles='xy', scale_units='xy', scale=1, color='blue')
-        ax.set_xlim(-1.1*np.max(np.abs(E_transverse)), 1.1*np.max(np.abs(E_transverse)))
-        ax.set_ylim(-1.1*np.max(np.abs(E_transverse)), 1.1*np.max(np.abs(E_transverse)))
-        ax.set_xlabel(r"$t_2$ direction (in-plane)")
-        ax.set_ylabel(r"$t_1$ direction (z-axis)")
-        ax.set_title(f"Transverse Electric Field at {distance_along_beam[0]:.3f}m along central ray")
-        ax.grid(True)
-        ax.set_aspect('equal')
-
-        ax_slider = plt.axes([0.2, 0.1, 0.6, 0.03])
-        slider = Slider(ax_slider, r'$\tau$ Index', 0, len(tau_vals)-1, valinit=0, valstep=1)
-
-        def update(val):
-            i = int(slider.val)
-            q.set_UVC(E_transverse[i, 0], E_transverse[i, 1])
-            ax.set_title(f"Transverse Electric Field vector at {distance_along_beam[i]:.3f}m along central ray")
-            fig.canvas.draw_idle()
-
-        slider.on_changed(update)
-        plt.show()
-        
-        # Transverse gaussian beam front
-        print("Plotting transverse gaussian beamfront")
-
-        fig, ax = plt.subplots()
-        plt.subplots_adjust(bottom=0.2)
-
-        scatter = ax.scatter(beam_width_range[0], gaussian_modE_profiles[0], color = 'red', s=15)  # first slice
-        line, = ax.plot(beam_width_range[0], theoretical_transverse_modE_tau[0], '-', linewidth=5, color = 'orange')
-        
-        ax.set_xlabel("Distance from beam center (m)")
-        ax.set_ylabel("mod(E)")
-        ax.set_title(f"Transverse gaussian beamfront at {distance_along_beam[0]:.3f}m along central ray")
-        ax.set_xlim(-np.max(width_at_tau)/width_factor, np.max(width_at_tau)/width_factor)
-        ax.set_ylim(0, 1.1*np.max(modE_list))
-
-        ax_slider = plt.axes([0.2, 0.05, 0.6, 0.03])
-        tau_slider = Slider(ax_slider, r'$\tau$ index', 0, tau_len - 1, valinit=0, valstep=1)
-
-        def update(val):
-            i = int(tau_slider.val)
-            scatter.set_offsets(np.column_stack([beam_width_range[i], gaussian_modE_profiles[i]]))
-            scatter.set_array(gaussian_modE_profiles[i])
-            line.set_data(beam_width_range[i], theoretical_transverse_modE_tau[i])
-            ax.autoscale_view()
-            ax.set_title(f"Transverse gaussian beamfront at {distance_along_beam[i]:.3f}m along central ray")
-            fig.canvas.draw_idle()
-
-        tau_slider.on_changed(update)
-        plt.show()
-        
-        # Start figure with 2 subplots, sharing x-axis
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 6), sharex=True, height_ratios=[2, 1])
-
-        # Top subplot: width
-        ax1.plot(distance_along_beam, np.linalg.norm(width.values, axis = 1), label="Scotty width", color='orange')
-        ax1.plot(distance_along_beam, np.array(fitted_widths), label="Fitted ERMES 20.0 width", color='red')
-        smoothed_width_list = get_moving_RMS(fitted_widths, 40)
-        #ax1.plot(distance_along_beam, smoothed_width_list, 'g-', label="Smoothed Fitted ERMES 20.0 width")
-        ax1.vlines(distance_along_beam[tau_cutoff], ymin=ax1.get_ylim()[0], ymax = ax1.get_ylim()[1], linestyles='dashed', color='blue')
-        ax1.set_ylabel("Width (m)")
-        ax1.set_title("Beam widths")
-        ax1.legend()
-
-        # Bottom subplot: chi**2
-        ax2.plot(distance_along_beam, chi2_list, label=r"$\chi^2$ of ERMES 20.0 fit", color='red')
-        ax2.vlines(distance_along_beam[tau_cutoff], ymin=ax2.get_ylim()[0], ymax = ax2.get_ylim()[1], linestyles='dashed', color='blue')
-        ax2.set_xlabel("Distance along central ray (m)")
-        ax2.set_ylabel(r"$\chi^2$")
-        ax2.legend()
-        plt.show()
-        
-        # Relative err of beam_width
-        err_width = get_relative_error(smoothed_width_list, np.linalg.norm(width.values, axis = 1))
-        plt.scatter(distance_along_beam, err_width, color = 'red', s = 15)
-        plt.xlabel("Distance along central ray (m)")
-        plt.ylabel("Relative error")
-        plt.title("Relative error between ERMES 20.0 and Scotty beam widths")
-        plt.show()
-        
-        # modE and Width together
-        # Start figure with 2 subplots, sharing x-axis
-        fig, (ax0, ax1) = plt.subplots(2, 1, figsize=(4, 10), sharex=True, height_ratios=[1, 1])
-        #plt.suptitle(r"Results for ERMES 20.0 & Scotty, $\theta_{pol}$="
-        #          + fr"{handle_scotty_launch_angle_sign(dt=dt):.1f}$^\circ$" 
-        #          + f", f={dt.inputs.launch_freq_GHz.values}GHz")
-        # Plot modE vs tau
-        ax0.scatter(distance_along_beam, modE_list, marker='.', color = 'red', label='ERMES 20.0')
-        theoretical_modE_tau = calc_Eb_from_scotty(dt=dt, wx=dt.inputs.launch_beam_width.values, wy=dt.inputs.launch_beam_width.values, E0 = modE_list[0])
-        ax0.scatter(distance_along_beam, theoretical_modE_tau, marker='.', color = 'orange', label='Scotty')
-        smoothed_modE_list = get_moving_RMS(modE_list, 40)
-        #plt.plot(distance_along_beam, smoothed_modE_list, 'g-', label="Smoothed ERMES")
-        ax0.vlines(distance_along_beam[tau_cutoff], ymin=ax0.get_ylim()[0], ymax = ax0.get_ylim()[1], linestyles='dashed', color='blue')
-        ax0.set_ylabel("|E| (A.U.)")
-        ax0.set_title("|E| vs Distance along central ray")
-        ax0.set_ylim(bottom=0)
-        ax0.legend()
-
-        # Bottom subplot: width
-        ax1.plot(distance_along_beam, np.linalg.norm(width.values, axis = 1), label="Scotty width", color='orange')
-        ax1.plot(distance_along_beam, np.array(fitted_widths), label="Fitted ERMES 20.0 width", color='red')
-        smoothed_width_list = get_moving_RMS(fitted_widths, 40)
-        #ax1.plot(distance_along_beam, smoothed_width_list, 'g-', label="Smoothed Fitted ERMES 20.0 width")
-        ax1.set_ylim(bottom = 0)
-        ax1.vlines(distance_along_beam[tau_cutoff], ymin=ax1.get_ylim()[0], ymax = ax1.get_ylim()[1], linestyles='dashed', color='blue')
-        ax1.set_xlabel("Distance along central ray (m)")
-        ax1.set_ylabel("Width (m)")
-        ax1.set_title("Beam widths")
-        #ax1.legend()
-        plt.show()
-        
-        # Poynting flux
-        plt.scatter(distance_along_beam, poynting_flux_per_tau, color = 'red', s = 15)
-        print("P_X at exit: ", poynting_flux_per_tau[-1])
-        plt.ylim(0, 1.1) # Since it should be 1
-        plt.vlines(distance_along_beam[tau_cutoff], ymin=plt.gca().get_ylim()[0], ymax = plt.gca().get_ylim()[1], linestyles='--', color='blue')
-        plt.xlabel("Distance along central ray (m)")
-        plt.ylabel("Power flux (W/m)")
-        plt.title("Poynting flux across beamfront along central ray")
-        plt.show()
-        
-        # Save the errors
-        if save:
-            np.savez(os.getcwd() + f"\\{prefix}_{dt.inputs.launch_freq_GHz.values}_{handle_scotty_launch_angle_sign(dt)}_errors", err_modE, err_width)
    
 def ERMES_results_to_plots_3D(
     res: str,
@@ -1478,13 +1129,14 @@ def ERMES_results_to_plots_3D(
 ):
     """
     Modular ERMES analysis & plotting (3D-native, 2D just means Z = 0)
+    If plotting 3D results, set normal_vector to None
 
     Args:
         res (str): Path to .res file (ERMES results)
         msh (str): Path to .msh file (ERMES mesh)
         dt (datatree): Scotty output file
         grid_resolution (float): Sampling resolution from meshing (m)
-        normal_vector (array): Normal vector to 2D planes for plotting
+        normal_vector (array or ndarray): Normal vector in ERMES XYZ that is perp to g for plotting and beam width calculations. (The width in the OTHER normal will be calculated). If it is None, automatically assume this is in 3D.
         plot_blocks (list[str]): Choose which logical plot blocks to render. If None, all are used. Available: "field_map", "modE_vs_tau", "transverse_profile", "widths", "flux", "errors"
         save (bool): If True, each plot block saves a PNG with the given prefix
         prefix (str): Prefix for saved figures
@@ -1492,6 +1144,11 @@ def ERMES_results_to_plots_3D(
     Returns:
         Plots
     """
+
+    if normal_vector is not None:
+        is2D = True
+    else:
+        is2D = False # Means it's 3D, so we don't need the normal vector. Use xhat and yhat for widths
 
     if plot_blocks is None:
         plot_blocks = ["field_map", "3D field_map", "modE_vs_tau", "transverse_profile", "widths", "flux", "errors"]
@@ -1511,34 +1168,49 @@ def ERMES_results_to_plots_3D(
     modE_list, vecE_array_beam, xyz_tree, modE_vals_all = sample_fields_along_beam(modE_xyz, vecE_xyz, beam_xyz)
 
     # Build transverse sampling slices & profiles using gaussian fit
+ 
     print("Building transverse E and widths")
-    fitted_widths, fit_params, chi2_list, offsets_per_tau, modE_profiles, mod_E_theoretical_profiles, poynting_flux_per_tau = build_transverse_profiles_and_fits(
+    (
+    fitted_widths, fitted_principle_width_1, fitted_principle_width_2, 
+    fit_params, chi2_list, offsets_per_tau, 
+    offsets_per_tau_x, offsets_per_tau_y, 
+    modE_profiles,  mod_E_theoretical_profiles, poynting_flux_per_tau,
+    fit_params_x, fit_params_y,
+    modE_profiles_x, modE_profiles_y, # x means in the x hat direction, y means in the y hat direction
+    modE_theoretical_profiles_x, modE_theoretical_profiles_y,
+    
+    ) = build_transverse_profiles_and_fits(
         dt,
         beam_xyz, 
         modE_xyz, 
         vecS_xyz,
         modE_list,
-        [0,0,1], 
+        normal_vector, # fittied principle widths only generated if normal vector is None
         grid_resolution=grid_resolution
     )
 
     # Plot
+    
+    # Only for 2D
     if "field_map" in plot_blocks:
-        plot_field_map(
-            modE_xyz=modE_xyz,
-            dt=dt,
-            tol=tol,
-            grid_resolution=grid_resolution,
-            norm_vec = normal_vector,
-            prefix=prefix,
-            save=save
-        )
+        if is2D: # Check if 2D. Essentially only plot this if we're doing a 2D plot
+            plot_field_map(
+                modE_xyz=modE_xyz,
+                dt=dt,
+                tol=tol,
+                grid_resolution=grid_resolution,
+                norm_vec = normal_vector,
+                prefix=prefix,
+                save=save
+            )
+        else:
+            pass
 
     if "3D field_map" in plot_blocks:
         plot_field_with_beam(
             dt=dt,
             modE_xyz= modE_xyz,
-            norm_vec = normal_vector,
+            norm_vec = normal_vector if is2D else None,
             prefix=prefix,
             save=save,
             #sample_rate=0.10
@@ -1555,27 +1227,57 @@ def ERMES_results_to_plots_3D(
         )
 
     if "transverse_profile" in plot_blocks:
-        plot_transverse_profiles(
-            offsets_per_tau, 
-            modE_profiles, 
-            fit_params, 
-            modE_theoretical_profiles=mod_E_theoretical_profiles,
-            beam_widths=fitted_widths,
-            prefix=prefix,
-            save=save
-        )
+        if is2D:
+            plot_transverse_profiles_2D(
+                offsets_per_tau, 
+                modE_profiles, 
+                fit_params, 
+                modE_theoretical_profiles=mod_E_theoretical_profiles,
+                prefix=prefix,
+                save=save
+            )
+        else:
+            plot_transverse_profiles_3D(
+                offsets_per_tau_x, 
+                offsets_per_tau_y,
+                modE_profiles_x, modE_profiles_y, 
+                fit_params_x, 
+                fit_params_y,
+                modE_theoretical_profiles_x, modE_theoretical_profiles_y,
+                prefix=prefix,
+                save=save
+            )
 
     if "widths" in plot_blocks:
-        plot_widths(
-            dt=dt,
-            distance_along_beam=distance_along_beam,
-            tau_cutoff=tau_cutoff,
-            fitted_widths=fitted_widths,
-            chi2_list=chi2_list,
-            prefix=prefix,
-            save=save
-        )
+        if is2D:
+            plot_2D_widths(
+                dt=dt,
+                distance_along_beam=distance_along_beam,
+                tau_cutoff=tau_cutoff,
+                fitted_widths=fitted_widths,
+                chi2_list=chi2_list,
+                norm_vec=normal_vector,
+                prefix=prefix,
+                save=save
+            )
+        else: # Plot 3D principle widths and error of fitting
+            plot_3D_widths(
+                dt=dt,
+                distance_along_beam=distance_along_beam,
+                tau_cutoff=tau_cutoff,
+                fitted_widths_x=fitted_principle_width_1, 
+                fitted_widths_y=fitted_principle_width_2,
+                prefix=prefix,
+                save=save
+            )
+            plot_3D_width_var_covar(
+                fit_params_x,
+                fit_params_y,
+                prefix,
+                save
+            )
 
+    # Only for 2D
     if "flux" in plot_blocks:
         plot_flux(
             distance_along_beam=distance_along_beam,
@@ -1585,7 +1287,7 @@ def ERMES_results_to_plots_3D(
             save=save
         )
 
-    if "errors" in plot_blocks:
+    if "errors" in plot_blocks: # NOT IMPLEMENTED PROPERLY YET, Likely won't bother
         plot_errors(
             dt=dt,
             distance_along_beam=distance_along_beam,
@@ -1696,7 +1398,7 @@ def sample_fields_along_beam(modE_xyz, vecE_xyz, beam_xyz):
 
     return np.array(modE_list), vecE_array_beam, tree, modE_vals_all
 
-def build_transverse_profiles_and_fits(dt, beam_xyz, modE_xyz, vecS_xyz, modE_list, normal_vec, grid_resolution):
+def build_transverse_profiles_and_fits(dt, beam_xyz, modE_xyz, vecS_xyz, modE_list, normal_vec, grid_resolution, show_progress = True):
     """
     Build and fit transverse |E| profiles along a beam in a 2D plane,
     and compute the theoretical transverse field envelope from Scotty.
@@ -1713,18 +1415,43 @@ def build_transverse_profiles_and_fits(dt, beam_xyz, modE_xyz, vecS_xyz, modE_li
 
     Returns:
         fitted_widths (array): (N,) fitted 1/e field widths from ERMES.
+        fitted_x: x_hat dir
+        fitted_y: y_hat dir
         fit_params (array): (N,3) [A_fit, x0_fit, w_fit].
         chi2_list (array): (N,) chi-squared values of fits.
         offsets_per_tau (list): offsets along b-hat for each tau.
+        offsets_per_tau_x: For 3D
+        offsets_per_tau_y: For 3D
         modE_profiles (list): sampled |E| profiles for each tau.
         modE_theoretical_profiles (list): theoretical Scotty envelopes along beamfront.
         poynting_flux_per_tau (array): Integrated poynting flux
+        fit_params_x: For 3D
+        fit_params_y: For 3D
+        modE_profiles_x: For 3D 
+        modE_profiles_y: For 3D
+        modE_theoretical_profiles_x: For 3D
+        modE_theoretical_profiles_y: For 3D
     """
-    n_hat = np.array(normal_vec, float)
-    n_hat /= np.linalg.norm(n_hat)
-    modE_coords = modE_xyz[:, :3]
-    modE_vals = modE_xyz[:, 3]
-    tree = cKDTree(modE_coords)
+
+    # Prepare ERMES data lookup
+    coords = modE_xyz[:, :3]
+    values = modE_xyz[:, 3]
+    tree = cKDTree(coords)
+
+    N = len(beam_xyz)
+    iterator = tqdm(range(N), desc="Building transverse profiles", ncols=100) if show_progress else range(N)
+
+    # Containers for 2D
+    fitted_widths, fit_params, chi2_list = [], [], []
+    offsets_per_tau, modE_profiles, modE_theoretical_profiles = [], [], []
+    
+    # Containers for 3D
+    fitted_x, fitted_y = [], []
+    fit_params_x, fit_params_y = [], []
+    chi2_x, chi2_y = [], []
+    modE_profiles_x, modE_profiles_y = [], []
+    offsets_per_tau_x, offsets_per_tau_y = [], []
+    modE_theoretical_profiles_x, modE_theoretical_profiles_y = [], []
     
     S_coords = vecS_xyz[:, :3]
     S_vals = vecS_xyz[:, 3:]
@@ -1732,21 +1459,24 @@ def build_transverse_profiles_and_fits(dt, beam_xyz, modE_xyz, vecS_xyz, modE_li
 
     poynting_flux_per_tau = []
 
-    N = len(beam_xyz)
-    fitted_widths, fit_params, chi2_list = [], [], []
-    offsets_per_tau, modE_profiles, modE_theoretical_profiles = [], [], []
-    poynting_flux_per_tau = []
-    
     # From Scotty
     ghat_cartesian = dt.analysis.g_hat_Cartesian  # in RtZ
     Psi_3D_Cartesian = dt.analysis.Psi_3D_Cartesian  # in RtZ
-    # Since Scotty cartesian is RtZ
-    n_hat_RtZ = XYZ_to_RtZ(n_hat)
-
-    beam_width_at_tau = np.linalg.norm(
-        beam_width(ghat_cartesian, n_hat_RtZ, Psi_3D_Cartesian).values,
-        axis=1
-    )
+    # 2D
+    if normal_vec is not None:
+        n_hat = np.array(normal_vec, float)
+        n_hat /= np.linalg.norm(n_hat)
+        n_hat_RtZ = XYZ_to_RtZ(n_hat)
+        beam_width_at_tau = np.linalg.norm(beam_width(ghat_cartesian, n_hat_RtZ, Psi_3D_Cartesian).values, axis=1)
+    # 3D
+    else:
+        n_hat = None
+        # For 3D, we will project onto x_hat and y_hat separately below
+        x_hat_xyz = np.apply_along_axis(RtZ_to_XYZ, axis = 1, arr = dt.analysis.x_hat_Cartesian.values)
+        y_hat_xyz = np.apply_along_axis(RtZ_to_XYZ, axis = 1, arr = dt.analysis.y_hat_Cartesian.values)
+        beam_width_x = np.linalg.norm(beam_width(ghat_cartesian, dt.analysis.y_hat_Cartesian, Psi_3D_Cartesian).values, axis=1)
+        beam_width_y = np.linalg.norm(beam_width(ghat_cartesian, dt.analysis.x_hat_Cartesian, Psi_3D_Cartesian).values, axis=1)
+    
 
     ghat_xyz = np.apply_along_axis(
         RtZ_to_XYZ, axis=1,
@@ -1758,67 +1488,163 @@ def build_transverse_profiles_and_fits(dt, beam_xyz, modE_xyz, vecS_xyz, modE_li
         dt=dt,
         E0=modE_list[0]
     )
+    if normal_vec is not None:
+        for i in iterator:
+            g_xyz = ghat_xyz[i]
+            g_rtz = ghat_cartesian[i]
+            Psi = Psi_3D_Cartesian.values[i]
 
-    # Loop over tau
-    for i in range(N):
-        g = ghat_xyz[i]
-        g /= np.linalg.norm(g)
+            # Project beam onto plane perp to n_hat
+            g_proj = g_xyz - np.dot(g_xyz, n_hat) * n_hat
+            g_proj /= np.linalg.norm(g_proj)
+            b_hat = np.cross(n_hat, g_proj)
+            b_hat /= np.linalg.norm(b_hat)
+            width = beam_width_at_tau[i]
+            n_points = int(max(np.rint(4 * width / grid_resolution), 5))
+            offsets = np.linspace(-2*width, 2*width, n_points)
 
-        # Projection onto plane
-        g_proj = g - np.dot(g, n_hat) * n_hat
-        g_proj /= np.linalg.norm(g_proj)
-        b_hat = np.cross(n_hat, g_proj)
-        b_hat /= np.linalg.norm(b_hat)
+            # Sample ERMES data
+            sample_points = beam_xyz[i] + offsets[:, None] * b_hat[None, :]
+            _, idx = tree.query(sample_points)
+            profile = values[idx]
+            modE_profiles.append(profile)
+            offsets_per_tau.append(offsets)
 
-        # Offset sampling along ±width
-        width = beam_width_at_tau[i]
-        n_points = int(max(np.rint(2 * width / grid_resolution), 5))
-        offsets = np.linspace(-width, width, n_points)
-        offsets_per_tau.append(offsets)
+            # Theoretical envelope (Scotty) in RtZ coords WLOG
+            P_perp = np.eye(3) - np.outer(g_rtz, g_rtz)
+            Psi_w = P_perp @ Psi @ P_perp
+            w_vecs = np.outer(offsets, b_hat)
+            w_vecs_RtZ = np.apply_along_axis(XYZ_to_RtZ, axis=1, arr=w_vecs)
+            quad = np.einsum('ni,ij,nj->n', w_vecs_RtZ, np.imag(Psi_w), w_vecs_RtZ)
+            envelope = np.exp(-0.5 * quad)
+            E_theory = modE_scotty[i] * envelope
+            modE_theoretical_profiles.append(E_theory)
 
-        sample_points = beam_xyz[i] + offsets[:, None] * b_hat[None, :]
-        _, idx = tree.query(sample_points)
-        profile = modE_vals[idx]
-        modE_profiles.append(profile)
+            # Fit Gaussian
+            try:
+                p0 = [np.max(profile), 0.0, width]
+                popt, _ = curve_fit(gaussian_fit, offsets, profile, p0=p0)
+                A_fit, x0_fit, w_fit = popt
+                E_fit = gaussian_fit(offsets, *popt)
+                chi2 = np.sum((profile - E_fit)**2 / (E_fit + 1e-12))
+                fit_params.append([A_fit, x0_fit, w_fit])
+                fitted_widths.append(abs(w_fit))
+                chi2_list.append(chi2)
+            except RuntimeError:
+                fit_params.append([np.nan, np.nan, np.nan])
+                fitted_widths.append(np.nan)
+                chi2_list.append(np.nan)
+    else:
+        # in x_hat direction
+        for i in iterator:
+            hat_vec = x_hat_xyz[i]
+            width = float(beam_width_x[i])
 
-        # Theoretical profile from Scotty
-        Psi = Psi_3D_Cartesian.values[i]
-        P_perp = np.eye(3) - np.outer(g, g)
-        Psi_w = P_perp @ Psi @ P_perp # Project to plane perp to g
-        w_vecs = np.apply_along_axis(XYZ_to_RtZ, axis = 1, arr = np.outer(offsets, b_hat)) # Since Psi_w is in RtZ
-        quad = np.einsum('ni,ij,nj->n', w_vecs, np.imag(Psi_w), w_vecs)
-        envelope = np.exp(-0.5 * quad)
-        E_theory = modE_scotty[i] * envelope
-        modE_theoretical_profiles.append(E_theory)
+            n_points = int(max(np.rint(4 * width / grid_resolution), 5))
+            offsets = np.linspace(-2*width, 2*width, n_points)
+            offsets_per_tau_x.append(offsets)
 
-        # Gaussian Fit (ERMES data)
-        try:
-            p0 = [np.max(profile), 0.0, width]
-            popt, _ = curve_fit(gaussian_fit, offsets, profile, p0=p0)
-            A_fit, x0_fit, w_fit = popt
-            E_fit = gaussian_fit(offsets, *popt)
-            chi2 = np.sum((profile - E_fit)**2 / (E_fit + 1e-12))
-            fit_params.append([A_fit, x0_fit, w_fit])
-            fitted_widths.append(abs(w_fit))
-            chi2_list.append(chi2)
-        except RuntimeError:
-            fit_params.append([np.nan, np.nan, np.nan])
-            fitted_widths.append(np.nan)
-            chi2_list.append(np.nan)
-            
+            # Sample points along x_hat
+            sample_points = beam_xyz[i] + offsets[:, None] * hat_vec[None, :]
+            _, idx = tree.query(sample_points)
+            profile = values[idx]
+            modE_profiles_x.append(profile)
+
+            # Theoretical profile
+            Psi = Psi_3D_Cartesian.values[i]
+            g_rtz = ghat_cartesian.values[i]
+            P_perp = np.eye(3) - np.outer(g_rtz, g_rtz)
+            Psi_w = P_perp @ Psi @ P_perp
+            w_vecs = np.outer(offsets, hat_vec)
+            w_vecs_RtZ = np.apply_along_axis(XYZ_to_RtZ, axis=1, arr=w_vecs)
+            quad = np.einsum('ni,ij,nj->n', w_vecs_RtZ, np.imag(Psi_w), w_vecs_RtZ)
+            envelope = np.exp(-0.5 * quad)
+            E_theory = modE_scotty[i] * envelope
+            modE_theoretical_profiles_x.append(E_theory)
+
+            # Gaussian fit
+            try:
+                p0 = [np.max(profile), 0.0, width]
+                popt, _ = curve_fit(gaussian_fit, offsets, profile, p0=p0)
+                A_fit, x0_fit, w_fit = popt
+                chi2 = np.sum((profile - gaussian_fit(offsets, *popt))**2 / (np.abs(profile) + 1e-12))
+                fit_params_x.append([A_fit, x0_fit, w_fit])
+                fitted_x.append(abs(w_fit))
+                chi2_x.append(chi2)
+            except RuntimeError:
+                fit_params_x.append([np.nan, np.nan, np.nan])
+                fitted_x.append(np.nan)
+                chi2_x.append(np.nan)
+
+        # In y_hat direction
+        for i in iterator:
+            hat_vec = y_hat_xyz[i]
+            width = float(beam_width_y[i])
+
+            n_points = int(max(np.rint(4 * width / grid_resolution), 5))
+            offsets = np.linspace(-2*width, 2*width, n_points)
+            offsets_per_tau_y.append(offsets)
+
+            # Sample points along y_hat
+            sample_points = beam_xyz[i] + offsets[:, None] * hat_vec[None, :]
+            _, idx = tree.query(sample_points)
+            profile = values[idx]
+            modE_profiles_y.append(profile)
+
+            # Theoretical profile
+            Psi = Psi_3D_Cartesian.values[i]
+            g_rtz = ghat_cartesian.values[i]
+            P_perp = np.eye(3) - np.outer(g_rtz, g_rtz)
+            Psi_w = P_perp @ Psi @ P_perp
+            w_vecs = np.outer(offsets, hat_vec)
+            w_vecs_RtZ = np.apply_along_axis(XYZ_to_RtZ, axis=1, arr=w_vecs)
+            quad = np.einsum('ni,ij,nj->n', w_vecs_RtZ, np.imag(Psi_w), w_vecs_RtZ)
+            envelope = np.exp(-0.5 * quad)
+            E_theory = modE_scotty[i] * envelope
+            modE_theoretical_profiles_y.append(E_theory)
+
+            # Gaussian fit
+            try:
+                p0 = [np.max(profile), 0.0, width]
+                popt, _ = curve_fit(gaussian_fit, offsets, profile, p0=p0)
+                A_fit, x0_fit, w_fit = popt
+                chi2 = np.sum((profile - gaussian_fit(offsets, *popt))**2 / (np.abs(profile) + 1e-12))
+                fit_params_y.append([A_fit, x0_fit, w_fit])
+                fitted_y.append(abs(w_fit))
+                chi2_y.append(chi2)
+            except RuntimeError:
+                fit_params_y.append([np.nan, np.nan, np.nan])
+                fitted_y.append(np.nan)
+                chi2_y.append(np.nan)
+                
+    # Flux regardless (maybe deprecate)
+    for i in iterator:
+        g_xyz = ghat_xyz[i]
         _, S_idx = tree_S.query(sample_points)
         S_vecs = S_vals[S_idx]
-        S_dot_g = np.dot(S_vecs, g)
+        S_dot_g = np.dot(S_vecs, g_xyz)
         total_flux = np.trapz(S_dot_g, x=offsets)
         poynting_flux_per_tau.append(total_flux)
 
-    return (np.array(fitted_widths),
-            np.array(fit_params),
-            np.array(chi2_list),
-            offsets_per_tau,
-            modE_profiles,
-            modE_theoretical_profiles,
-            np.array(poynting_flux_per_tau))
+    return (
+        np.array(fitted_widths),
+        np.array(fitted_x),
+        np.array(fitted_y),
+        np.array(fit_params),
+        np.array(chi2_list),
+        offsets_per_tau,
+        offsets_per_tau_x,
+        offsets_per_tau_y,
+        modE_profiles,
+        modE_theoretical_profiles,
+        np.array(poynting_flux_per_tau),
+        np.array(fit_params_x),
+        np.array(fit_params_y),
+        np.array(modE_profiles_x, dtype=object),
+        np.array(modE_profiles_y, dtype=object),
+        np.array(modE_theoretical_profiles_x, dtype=object),
+        np.array(modE_theoretical_profiles_y, dtype=object)
+    )
 
 # Plot functions
 def plot_field_map(modE_xyz, dt, tol, grid_resolution, norm_vec, prefix, save):
@@ -1897,7 +1723,7 @@ def plot_field_map(modE_xyz, dt, tol, grid_resolution, norm_vec, prefix, save):
         plt.savefig(f"{prefix}_field_map.png", dpi=200)
     plt.show()
 
-def plot_field_with_beam(dt, modE_xyz, norm_vec = None, save=False, prefix="", sample_rate = 0.25):
+def plot_field_with_beam(dt, modE_xyz, norm_vec = None, save=False, prefix="", sample_rate = 0.05):
     """
     Plot the 3D ERMES |E| field (voxel-style scatter) with beam geometry overlaid.
 
@@ -1941,13 +1767,22 @@ def plot_field_with_beam(dt, modE_xyz, norm_vec = None, save=False, prefix="", s
                     label='ERMES |E| Field')
     
     # Overlay beam geometry
-    width = beam_width(dt.analysis.g_hat_Cartesian, XYZ_to_RtZ(norm_vec), dt.analysis.Psi_3D_Cartesian)
-    beam = dt.analysis.beam_cartesian 
-    beam_plus = beam + width
-    beam_minus = beam - width
-    plt.plot(beam_plus.sel(col_cart="X"), beam_plus.sel(col_cart="Z"), beam_plus.sel(col_cart="Y"),"--k", lw=2)
-    plt.plot(beam_minus.sel(col_cart="X"), beam_minus.sel(col_cart="Z"), beam_minus.sel(col_cart="Y"), "--k", lw=2, label="Beam width")
-    plt.plot(beam.sel(col_cart="X"), beam.sel(col_cart="Z"), beam.sel(col_cart="Y"),  "-", c='black', lw=4, label="Central ray")
+    if norm_vec is not None: # Means this is 2D ERMES
+        width = beam_width(dt.analysis.g_hat_Cartesian, XYZ_to_RtZ(norm_vec), dt.analysis.Psi_3D_Cartesian)
+        beam = dt.analysis.beam_cartesian 
+        beam_plus = beam + width
+        beam_minus = beam - width
+        plt.plot(beam_plus.sel(col_cart="X"), beam_plus.sel(col_cart="Z"), beam_plus.sel(col_cart="Y"),"--k", lw=2)
+        plt.plot(beam_minus.sel(col_cart="X"), beam_minus.sel(col_cart="Z"), beam_minus.sel(col_cart="Y"), "--k", lw=2, label="Beam width")
+        plt.plot(beam.sel(col_cart="X"), beam.sel(col_cart="Z"), beam.sel(col_cart="Y"),  "-", c='black', lw=4, label="Central ray")
+    else: # Means this is 3D ERMES, use principal widths in x_hat direction for plotting
+        width = beam_width(dt.analysis.g_hat_Cartesian, dt.analysis.x_hat_Cartesian.values, dt.analysis.Psi_3D_Cartesian)
+        beam = dt.analysis.beam_cartesian 
+        beam_plus = beam + width
+        beam_minus = beam - width
+        plt.plot(beam_plus.sel(col_cart="X"), beam_plus.sel(col_cart="Z"), beam_plus.sel(col_cart="Y"),"--k", lw=2)
+        plt.plot(beam_minus.sel(col_cart="X"), beam_minus.sel(col_cart="Z"), beam_minus.sel(col_cart="Y"), "--k", lw=2, label="Beam width")
+        plt.plot(beam.sel(col_cart="X"), beam.sel(col_cart="Z"), beam.sel(col_cart="Y"),  "-", c='black', lw=4, label="Central ray")
 
 
     # Labels and formatting
@@ -1992,12 +1827,11 @@ def plot_modE_vs_tau(dt, modE_list, tau_cutoff, distance_along_beam, prefix, sav
         plt.savefig(f"{prefix}_modE_vs_tau.png", dpi=200)
     plt.show()
 
-def plot_transverse_profiles(
+def plot_transverse_profiles_2D(
     offsets_per_tau,
     modE_profiles,
     fit_params,
     modE_theoretical_profiles=None,
-    beam_widths=None,
     save: bool = False,
     prefix: str = ""
 ):
@@ -2010,7 +1844,6 @@ def plot_transverse_profiles(
         modE_profiles (list): list of 1D arrays of sampled |E| values from ERMES.
         fit_params (ndarray): (N,3) fitted Gaussian parameters [A, x0, w].
         modE_theoretical_profiles (list or None): list of 1D arrays of theoretical |E| profiles from Scotty.
-        beam_widths (ndarray or None): optional fitted widths for marking ±w.
         save (bool): Whether to save figure.
         prefix (str): Prefix for save name.
     """
@@ -2082,11 +1915,127 @@ def plot_transverse_profiles(
 
     plt.show()
 
-def plot_widths(dt, distance_along_beam, tau_cutoff, fitted_widths, chi2_list, prefix, save):
+def plot_transverse_profiles_3D(
+    offsets_per_tau_x,
+    offsets_per_tau_y,
+    modE_profiles_x,
+    modE_profiles_y,
+    fit_params_x,
+    fit_params_y,
+    modE_theoretical_profiles_x,
+    modE_theoretical_profiles_y,
+    save: bool = False,
+    prefix: str = ""
+):
+    """
+    Interactive 3D transverse profile plot showing ERMES |E| samples,
+    Gaussian fits, and Scotty theoretical envelopes along x̂ and ŷ.
+
+    Args:
+        offsets_per_tau (list): list of offset arrays for each τ.
+        modE_profiles_x, modE_profiles_y: sampled |E| profiles from ERMES.
+        fit_params (tuple): (fit_params_x, fit_params_y), Gaussian parameters [A, x0, w].
+        modE_theoretical_profiles (tuple, optional): (theory_x, theory_y) from Scotty.
+        beam_widths (tuple, optional): (fitted_principle_width_1, fitted_principle_width_2) for ±w markers.
+        prefix (str): File save prefix.
+        save (bool): Whether to save figure.
+    """
+
+    N = len(offsets_per_tau_x)
+
+    # Determine scaling
+    global_maxE = np.nanmax([
+        np.nanmax(np.abs(p)) for p in (modE_profiles_x)
+    ])
+    global_max_offset = np.nanmax([np.nanmax(np.abs(o)) for o in offsets_per_tau_x])
+
+    # Figure setup
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(7, 7), sharex=True)
+    plt.subplots_adjust(bottom=0.15, hspace=0.25)
+
+    i0 = 0
+    x0 = offsets_per_tau_x[i0]
+    yx = modE_profiles_x[i0]
+    yy = modE_profiles_y[i0]
+
+    # ERMES scatter points
+    scatter_x = ax1.scatter(x0, yx, color='red', s=15, label=r'ERMES samples $(\hat{x})$')
+    scatter_y = ax2.scatter(x0, yy, color='red', s=15, label=r'ERMES samples $(\hat{y})$')
+
+    # Gaussian fits
+    fit_yx = gaussian_fit(x0, *fit_params_x[i0])
+    fit_yy = gaussian_fit(x0, *fit_params_y[i0])
+    line_fit_x, = ax1.plot(x0, fit_yx, color='green', lw=2, label='Gaussian fit')
+    line_fit_y, = ax2.plot(x0, fit_yy, color='green', lw=2, label='Gaussian fit')
+
+    # Scotty theoretical envelopes
+    thx = modE_theoretical_profiles_x[i0]
+    thy = modE_theoretical_profiles_y[i0]
+    line_theory_x, = ax1.plot(x0, thx, '--', color='orange', lw=2, label='Scotty theory')
+    line_theory_y, = ax2.plot(x0, thy, '--', color='orange', lw=2, label='Scotty theory')
+
+    # Set limits, labels
+    for ax, label in zip([ax1, ax2], [r"$\hat{x}$ direction", r"$\hat{y}$ direction"]):
+        ax.set_xlim(-global_max_offset, global_max_offset)
+        ax.set_ylim(0, 1.1 * global_maxE)
+        ax.set_ylabel('|E| (A.U.)')
+        ax.legend()
+        ax.grid(True)
+    ax2.set_xlabel('Offset from beam center (m)')
+    ax1.set_title(r'Transverse |E| profiles at $\tau$ = 0')
+
+    # Slider setup
+    ax_slider = plt.axes([0.2, 0.05, 0.6, 0.03])
+    slider = Slider(ax_slider, 'τ index', 0, N - 1, valinit=i0, valstep=1)
+
+    # Update function
+    def update(val):
+        j = int(slider.val)
+
+        # --- x-hat plot ---
+        x = offsets_per_tau_x[j]
+        yx = modE_profiles_x[j]
+        if len(x) != len(yx):
+            min_len = min(len(x), len(yx))
+            x, yx = x[:min_len], yx[:min_len]
+        scatter_x.set_offsets(np.column_stack([x, yx]))
+        line_fit_x.set_data(x, gaussian_fit(x, *fit_params_x[j]))
+        if line_theory_x is not None:
+            y_theory_x = modE_theoretical_profiles_x[j]
+            if len(y_theory_x) != len(x):
+                y_theory_x = y_theory_x[:len(x)]
+            line_theory_x.set_data(x, y_theory_x)
+
+        # --- y-hat plot ---
+        y = offsets_per_tau_y[j]
+        yy = modE_profiles_y[j]
+        if len(y) != len(yy):
+            min_len = min(len(y), len(yy))
+            y, yy = y[:min_len], yy[:min_len]
+        scatter_y.set_offsets(np.column_stack([y, yy]))
+        line_fit_y.set_data(y, gaussian_fit(y, *fit_params_y[j]))
+        if line_theory_y is not None:
+            y_theory_y = modE_theoretical_profiles_y[j]
+            if len(y_theory_y) != len(y):
+                y_theory_y = y_theory_y[:len(y)]
+            line_theory_y.set_data(y, y_theory_y)
+
+        fig.canvas.draw_idle()
+
+    slider.on_changed(update)
+
+    # Save option
+    if save:
+        fig.savefig(f"{prefix}_transverse_profiles_3D.png", dpi=250, bbox_inches='tight')
+        print(f"Saved {prefix}_transverse_profiles_3D.png")
+
+    plt.show()
+
+def plot_2D_widths(dt, distance_along_beam, tau_cutoff, fitted_widths, norm_vec, chi2_list, prefix, save):
     """
     Fitted vs Scotty widths + chi^2 vs distance (stacked).
     """
-    width = beam_width(dt.analysis.g_hat, np.array([0.0, 1.0, 0.0]), dt.analysis.Psi_3D)
+    width = beam_width(dt.analysis.g_hat_Cartesian, XYZ_to_RtZ(norm_vec), dt.analysis.Psi_3D_Cartesian)
     width_norm = np.linalg.norm(width.values, axis=1)
 
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 6), sharex=True, height_ratios=[2, 1])
@@ -2108,10 +2057,103 @@ def plot_widths(dt, distance_along_beam, tau_cutoff, fitted_widths, chi2_list, p
     if save:
         plt.savefig(f"{prefix}_widths_and_chi2.png", dpi=200)
     plt.show()
+    
+def plot_3D_widths(dt, distance_along_beam, tau_cutoff, fitted_widths_x, fitted_widths_y, prefix, save):
+    """
+    Fitted vs Scotty widths for x_hat and y_hat directions (principle widths)
+    """
+    width_x = beam_width(dt.analysis.g_hat_Cartesian, dt.analysis.y_hat_Cartesian, dt.analysis.Psi_3D_Cartesian) # in x_hat direction
+    width_y = beam_width(dt.analysis.g_hat_Cartesian, dt.analysis.x_hat_Cartesian, dt.analysis.Psi_3D_Cartesian) # in y_hat direction
+    width_x_norm = np.linalg.norm(width_x.values, axis=1)
+    width_y_norm = np.linalg.norm(width_y.values, axis=1)
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 6), sharex=True, height_ratios=[1, 1])
+
+    ax1.plot(distance_along_beam, width_x_norm, '--', label=r"Scotty width $\hat{x}$ direction", color='orange')
+    ax1.plot(distance_along_beam, fitted_widths_x, label=r"Fitted ERMES width $\hat{x}$ direction", color='red') # width in x_hat direction
+    ax1.vlines(distance_along_beam[tau_cutoff], *ax1.get_ylim(), linestyles='--', color='blue')
+    ax1.set_ylabel("Width (m)")
+    ax1.set_title("Beam widths")
+    ax1.legend()
+    
+    ax2.plot(distance_along_beam, width_y_norm, '--', label=r"Scotty width $\hat{y}$ direction", color='orange')
+    ax2.plot(distance_along_beam, fitted_widths_y, label=r"Fitted ERMES width $\hat{y}$ direction", color='red') # width in y_hat direction
+    ax2.vlines(distance_along_beam[tau_cutoff], *ax2.get_ylim(), linestyles='--', color='blue')
+    ax2.set_ylabel("Width (m)")
+    ax2.set_title("Beam widths")
+    ax2.legend()
+
+
+    plt.tight_layout()
+    if save:
+        plt.savefig(f"{prefix}_principle_widths.png", dpi=200)
+    plt.show()
+
+def plot_3D_width_var_covar(
+    fit_params_x, 
+    fit_params_y, 
+    prefix: str = "", 
+    save: bool = False
+):
+    """
+    Plot the variance and covariance of 3D Gaussian beam widths
+    fitted along the x_hat andy_hat principal axes.
+
+    Args:
+        fit_params_x (ndarray): (N,3) fitted Gaussian parameters [A, x0, w] for x_hat direction.
+        fit_params_y (ndarray): (N,3) fitted Gaussian parameters [A, x0, w] for y_hat direction.
+        prefix (str): Optional filename prefix for saving figures.
+        save (bool): Whether to save the generated figure.
+    """
+
+    # Extract valid widths (w corresponds to 1/e field width)
+    sigma_x = np.array([p[2] for p in fit_params_x if np.all(np.isfinite(p))])
+    sigma_y = np.array([p[2] for p in fit_params_y if np.all(np.isfinite(p))])
+
+    # tau index range (ensure equal length for plotting)
+    N = min(len(sigma_x), len(sigma_y))
+    tau_vals = np.arange(N)
+    sigma_x, sigma_y = sigma_x[:N], sigma_y[:N]
+
+    # Variance and covariance
+    variance_x = sigma_x**2
+    variance_y = sigma_y**2
+    covariance_xy = sigma_x * sigma_y
+
+    # Plot it
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4), sharey=True)
+    plt.subplots_adjust(wspace=0.3)
+
+    # Left: Variances
+    ax1.plot(tau_vals, variance_x, label=r'$\sigma_x^2$', color='red')
+    ax1.plot(tau_vals, variance_y, label=r'$\sigma_y^2$', color='blue')
+    ax1.set_title("Variance of Fitted Gaussian Widths")
+    ax1.set_xlabel(r"$\tau$ index")
+    ax1.set_ylabel(r"Variance (m$^2$)")
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+
+    # Right: Covariance
+    ax2.plot(tau_vals, covariance_xy, color='purple', label=r'$\sigma_x\sigma_y$')
+    ax2.set_title("Covariance of Fitted Gaussian Widths")
+    ax2.set_xlabel(r"$\tau$ index")
+    ax2.set_ylabel(r"Covariance (m$^2$)")
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+
+    plt.suptitle("3D Gaussian Beam Width Variance and Covariance", fontsize=12)
+
+    # Save optional
+    if save:
+        filename = f"{prefix}_3D_width_var_covar.png"
+        plt.savefig(filename, dpi=200, bbox_inches='tight')
+        print(f"Saved 3D width variance/covariance plot to {filename}")
+
+    plt.show()
 
 def plot_flux(distance_along_beam, poynting_flux_per_tau, tau_cutoff, prefix, save):
     """
-    Poynting flux S dot g integrated across beamfront vs distance.
+    Poynting flux S dot g integrated across beamfront vs distance. Only valid for 2D since in 3D, we can just calculate it from ERMES
     """
     plt.figure(figsize=(7, 4))
     plt.scatter(distance_along_beam, poynting_flux_per_tau, color='red', s=15)
@@ -2125,6 +2167,7 @@ def plot_flux(distance_along_beam, poynting_flux_per_tau, tau_cutoff, prefix, sa
         plt.savefig(f"{prefix}_poynting_flux.png", dpi=200)
     plt.show()
 
+# NOT PROPERLY IMPLEMENTED YET AND LIKELY WON'T BOTHER
 def plot_errors(dt, distance_along_beam, tau_cutoff, modE_list, fitted_widths, prefix, save):
     """
     Relative errors for |E| and width vs Scotty
@@ -2237,16 +2280,17 @@ if __name__ == '__main__':
     
     #"""
     
-    # Try out the 3D one with 2D known results
+    #"""
     ERMES_results_to_plots_3D(
-        res="\\Final_Ermes_output\\DIII-D_7_degree_oblique.post.res", 
-        msh="\\Final_Ermes_output\\DIII-D_7_degree_oblique.post.msh",
+        res="\\Final_Ermes_output\\7_degree_3D.res", 
+        msh="\\Final_Ermes_output\\7_degree_3D.msh",
         dt=load_scotty_data('\\Output\\scotty_output_freq72.5_pol-7.0_rev.h5'),
-        grid_resolution=4e-4,
-        normal_vector=[-0.0191506, 0.13483198, 0.9906834],
-        plot_blocks=["field_map", "3D field_map", "modE_vs_tau", "transverse_profile", "widths", "flux", "errors"],
+        grid_resolution=8e-4,
+        normal_vector=None, #[0, 0, 1], #[-0.0191506, 0.13483198, 0.9906834],
+        plot_blocks=["modE_vs_tau", "transverse_profile", "widths"],
         save=False
     )
+    #"""
     
     """
     # Plotting stuffs to get summary of errors
