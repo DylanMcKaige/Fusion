@@ -1,5 +1,7 @@
 """
 Generate fullwave .dat files for ERMES in 3D from ne.dat and topfile.json
+
+Run this AFTER meshing and AFTER running in DEBUG mode in ERMES
 """
 import json, re
 import pandas as pd
@@ -58,7 +60,7 @@ if node_ids.size == 0:
 # x = R cosphi, y = Z, z = -R sinphi
 Rnod = np.hypot(x, z)
 Znod = y
-phi = np.arctan2(-z, x) # minus to satisfy z = -R sinφ
+phi = np.arctan2(-z, x) # minus to satisfy z = -R sinphi
 
 # Evaluate Psi, Br, Bt, Bz at node (R,Z)
 Psi = pol_flux_spline.ev(Rnod, Znod)
