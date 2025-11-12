@@ -1,5 +1,7 @@
 """
 Generate fullwave .dat files for ERMES in 2D from ne.dat and topfile.json
+
+Run this AFTER meshing and AFTER running in DEBUG mode in ERMES
 """
 import json, re
 import pandas as pd
