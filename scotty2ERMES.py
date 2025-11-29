@@ -14,6 +14,7 @@ TODO
 2. Make a figure that describes everything
 3. Documentation
 4. Transition saving to also include a .h5 file for ease of use
+5. Tidy up plotting functions (a lot of repeated variables)
 
 References
     [1] Two dimensional full-wave simulations of Doppler back-scattering in tokamak plasmas with COMSOL by Quinn Pratt et al (in-progress paper)
@@ -51,7 +52,6 @@ from matplotlib import colormaps as cm
 from scotty.analysis import beam_width
 from scotty.plotting import plot_poloidal_crosssection
 from scotty.fun_general import find_vec_lab_Cartesian, find_Psi_3D_lab_Cartesian
-from scotty.plotting_3D import plot_2d_cross_section
 
 def handle_scotty_launch_angle_sign(dt: datatree):
     """
