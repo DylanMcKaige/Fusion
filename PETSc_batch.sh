@@ -6,12 +6,13 @@
 # Updated on 19/5/2025
 
 # Path to GiD, need to manually change
-MY_PATH=$HOME/mckaigedj/7_degree_new/7_degree_new.gid/
+MY_PATH=$HOME/to/your/.gid
 
 MPI_EXE=$PETSC_DIR/lib/petsc/bin/petscmpiexec
 PETSC_EXE=$HOME/mckaigedj/PETSc/Solver/PETScSolver
 SOLVER_INFO=$MY_PATH/SolverInfo.info
 
+# Change accordingly to your needs
 PETSC_SOLVER='-ksp_type gmres -pc_type lu -pc_factor_mat_solver_type mumps'
 
 # It should only take 1 iter, but here we set 10000 as an arbitrary cap before it 'gives up'
