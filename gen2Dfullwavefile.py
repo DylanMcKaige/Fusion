@@ -1,7 +1,7 @@
 """
 Generate fullwave .dat files for ERMES in 2D from ne.dat and topfile.json
 
-Run this AFTER meshing and AFTER running in DEBUG mode in ERMES
+Run this AFTER meshing and AFTER running in DEBUG mode in ERMES to generate the problem_name-1.dat file
 """
 import json, re
 import pandas as pd
@@ -19,7 +19,7 @@ ne_file = pd.read_csv(ne_data_path, sep=' ', header=None, skiprows=1)
 with open(topfile_data_path, 'r') as file: topfile_data = json.load(file) 
 
 ne_data = ne_file.to_numpy(dtype=float).T  
-ne_spline = UnivariateSpline(ne_data[0]**2, ne_data[1], s=0, ext=1)
+ne_spline = UnivariateSpline(ne_data[0]**2, ne_data[1], k=5, s=0, ext=1) # Spline order could be varied depending on ne data
 
 # Load cross-section fields (R,Z grids and 2D arrays)
 A = {k: np.array(v) for k, v in topfile_data.items()}
@@ -31,7 +31,8 @@ BrRZ = np.asarray(A['Br'])
 BtRZ = np.asarray(A['Bt'])
 BzRZ = np.asarray(A['Bz'])
 
-# Build splines on the cross-section
+# Build splines on the cross-section,
+# the spline order likely can be varied for a more physical fit
 pol_flux_spline = RectBivariateSpline(Rg, Zg, PsiRZ.T, kx=5, ky=5, s=0)
 Br_spline = RectBivariateSpline(Rg, Zg, BrRZ.T,  kx=5, ky=5, s=0)
 Bt_spline = RectBivariateSpline(Rg, Zg, BtRZ.T,  kx=5, ky=5, s=0)
