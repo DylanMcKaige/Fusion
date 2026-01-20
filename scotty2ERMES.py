@@ -1146,11 +1146,13 @@ def ERMES_results_to_plots(
         ds["fitted_principal_width_y_hat"] = ("tau", np.asarray(fitted_principle_width_2, float))
         ds["fit_params_x_hat"] = (("tau", "p"), np.asarray(fit_params_x, float))
         ds["fit_params_y_hat"] = (("tau", "p"), np.asarray(fit_params_y, float))
-        ds = ds.assign_coords(p=np.arange(ds["fit_params_x"].shape[1]))
+        ds = ds.assign_coords(p=np.arange(ds["fit_params_x_hat"].shape[1]))
 
     # Store offsets + ERMES profiles + theory profiles without padding.
 
     if normal_vector is not None: # 2D full-wave
+        ds["normal_vector"] = normal_vector
+        
         off_flat, off_indptr, _ = flatten_xr(offsets_per_tau)
         E_flat, E_indptr, _ = flatten_xr(modE_profiles)
         T_flat, T_indptr, _ = flatten_xr(mod_E_theoretical_profiles)
@@ -1179,7 +1181,7 @@ def ERMES_results_to_plots(
         ds = ds.assign_coords(sample_x=np.arange(offx_flat.size), tau_plus1_x=np.arange(offx_indptr.size))
         ds["offsets_xhat_flat"] = ("sample_x", offx_flat)
         ds["modE_xhat_flat"] = ("sample_x", Ex_flat)
-        ds["tau_index_pointer_x"] = ("tau_plus1_x", offx_indptr)
+        ds["tau_index_pointer_x"] = ("tau_plus1_x", offx_indptr) # Likely can be removed
         if modE_theoretical_profiles_x is not None:
             ds["modE_xhat_theory_flat"] = ("sample_x", Tx_flat)
 
@@ -1191,16 +1193,18 @@ def ERMES_results_to_plots(
         ds = ds.assign_coords(sample_y=np.arange(offy_flat.size), tau_plus1_y=np.arange(offy_indptr.size))
         ds["offsets_yhat_flat"] = ("sample_y", offy_flat)
         ds["modE_yhat_flat"] = ("sample_y", Ey_flat)
-        ds["tau_index_pointer_y"] = ("tau_plus1_y", offy_indptr)
+        ds["tau_index_pointer_y"] = ("tau_plus1_y", offy_indptr) # Likely can be removed
         if modE_theoretical_profiles_y is not None:
             ds["modE_yhat_theory_flat"] = ("sample_y", Ty_flat)
+            
+    # Additional useful constants
+    ds["E0"] = E0
 
     ds.to_netcdf(out_h5, engine="h5netcdf")
     print(f"Saved analysis to: {out_h5}")
     
     # Plot
-    
-    # Only for 2D
+    # TODO Rename the variables to be standardized...
     if "field_map" in plot_blocks:
         if is2D: # Check if 2D. Essentially only plot this if we're doing a 2D plot
             plot_field_map(
@@ -1665,6 +1669,51 @@ def build_transverse_profiles_and_fits(dt, beam_xyz, modE_xyz, vecS_xyz, modE_li
         np.array(modE_theoretical_profiles_x, dtype=object),
         np.array(modE_theoretical_profiles_y, dtype=object)
     )
+
+def exact_to_ERMES(exact_data: str, tol: float, E0: float, u0: float):
+    """
+    Convert a .npz field map of the exact |E| results to a format that can be processed by the analysis functions.
+
+    Args:
+        exact_data (str): Path to the exact data file
+        tol (float): Tolerance of the full-wave simulation to match resolution
+        E0 (float): First |E| along central ray from ERMES, for normalisation
+        u0 (float): First |u_Exact| along central ray from Exact, for normalisation
+    """
+    mask = np.abs(modE_xyz[:, 2]) < tol
+    slice_pts = modE_xyz[mask]
+    
+    R = slice_pts[1:, 0]
+    Z = slice_pts[1:, 1]
+
+    # Build uniform grid in R-Z
+    Rmin, Rmax = np.min(R), np.max(R)
+    Zmin, Zmax = np.min(Z), np.max(Z)
+    
+    exact_data = np.load(exact_data)
+    X_grid = exact_data["X_grid"]
+    Y_grid = exact_data["Y_grid"]
+    field_mag_norm = exact_data["field_mag_norm"]
+    #field_real_norm = exact_data["field_real_norm"]
+    
+    mask_X = (X_grid >= Rmin) & (X_grid <= Rmax)
+    mask_Y = (Y_grid >= Zmin) & (Y_grid <= Zmax)
+    
+    # Force this into ERMES.res modE_xyz format
+    modE_xyz = XX, YY = np.meshgrid(X_grid[mask_X], Y_grid[mask_Y], indexing='ij')
+    node_x = XX.ravel()
+    node_y = YY.ravel()
+    node_z = np.zeros_like(node_x)
+    
+    node_to_xyz_exact = np.column_stack([node_x, node_y, node_z])
+    field_mag = field_mag_norm[np.ix_(mask_X, mask_Y)]
+    
+    modE_array_exact = field_mag.ravel()*E0/u0
+    
+    modE_xyz = np.hstack(
+        (node_to_xyz_exact, modE_array_exact.reshape(-1,1))
+    )
+    return modE_xyz
 
 # Plot functions
 def plot_field_map(modE_xyz, dt, tol, grid_resolution, norm_vec, prefix, save, cartesian_scotty, E0):
@@ -2405,7 +2454,6 @@ def plot_flux(distance_along_beam, poynting_flux_per_tau, tau_cutoff, prefix, sa
         plt.savefig(f"{prefix}_poynting_flux.png", dpi=200)
     plt.show()
 
-
 # Getting an oblique plane for 2D ERMES defined by a known normal
 def define_plane_from_normal_and_point(n_vec, o1_vec):
     """
@@ -2575,6 +2623,8 @@ if __name__ == '__main__':
     res_0_tor = "\\Final_Ermes_output\\7_pol_0_tor_3D_new.post.res"
     msh_0_tor = "\\Final_Ermes_output\\7_pol_0_tor_3D_new.post.msh"
     
+    res_7_pol_0_tor = "\\Final_Ermes_output\\7_pol_0_tor_2D.post.res"
+    msh_7_pol_0_tor = "\\Final_Ermes_output\\7_pol_0_tor_2D.post.msh"
     res_5_pol_0_tor = "\\Final_Ermes_output\\5_pol_0_tor_2D.post.res"
     msh_5_pol_0_tor = "\\Final_Ermes_output\\5_pol_0_tor_2D.post.msh"
     res_3_pol_0_tor = "\\Final_Ermes_output\\3_pol_0_tor_2D.post.res"
@@ -2599,21 +2649,21 @@ if __name__ == '__main__':
     
     
     ERMES_results_to_plots(
-        res=MAST_U_res_7_pol_0_tor,
-        msh=MAST_U_msh_7_pol_0_tor,
-        dt=MAST_U_dt,
-        grid_resolution=7e-4,
+        res=res_7_pol_0_tor,
+        msh=msh_7_pol_0_tor,
+        dt=load_scotty_data('\\Output\\scotty_output_ideal_72.5_pol-7.0_tor0.0000_rev.h5'),
+        grid_resolution=4e-4,
         normal_vector = n_0_tor_2D,
         plot_blocks=["field_map"],
-        prefix="testing_saving_MAST_U",
+        prefix="testing_saving_DIII-D_7_pol_0_tor",
         save=False,
         path=os.getcwd() + '\\analysis_data\\',
         cartesian_scotty=False,
-        E0 = 124.3928303
+        E0 = 233.4298856
     )
     #"""
 
-    # Plotting stuffs to get summary of modE vs tau
+    # Plotting stuffs to get summary of modE vs tau BRUTE FORCED so this is deprecated
     """
     dt_1_5726_tor=load_scotty_data('\\Output\\scotty_output_tor_ideal__freq72.5_pol-7.0_tor1.5726_rev.h5')
     dt=load_scotty_data('\\Output\\scotty_output_tor_ideal__freq72.5_pol-7.0_tor1.5726_rev.h5')
@@ -2775,39 +2825,7 @@ if __name__ == '__main__':
     # Hacking this in because it's just for this super specific case for the paper
     # Essentially override the loaded in ERMES data with the data from the exact eqn to use my analysis functions on the exact data for easy comparison
     """
-    mask = np.abs(modE_xyz[:, 2]) < tol
-    slice_pts = modE_xyz[mask]
     
-    R = slice_pts[1:, 0]
-    Z = slice_pts[1:, 1]
-
-    # Build uniform grid in R-Z
-    Rmin, Rmax = np.min(R), np.max(R)
-    Zmin, Zmax = np.min(Z), np.max(Z)
-    
-    exact_data = np.load("exact_linear_layer_updated.npz")
-    X_grid = exact_data["X_grid"]
-    Y_grid = exact_data["Y_grid"]
-    field_mag_norm = exact_data["field_mag_norm"]
-    field_real_norm = exact_data["field_real_norm"]
-    
-    mask_X = (X_grid >= Rmin) & (X_grid <= Rmax)
-    mask_Y = (Y_grid >= Zmin) & (Y_grid <= Zmax)
-    
-    # Force this into ERMES.res modE_xyz format
-    modE_xyz = XX, YY = np.meshgrid(X_grid[mask_X], Y_grid[mask_Y], indexing='ij')
-    node_x = XX.ravel()
-    node_y = YY.ravel()
-    node_z = np.zeros_like(node_x)
-    
-    node_to_xyz_exact = np.column_stack([node_x, node_y, node_z])
-    field_mag = field_mag_norm[np.ix_(mask_X, mask_Y)]
-    
-    modE_array_exact = field_mag.ravel()*107.0100021362305/1.35521961 # New value is 1.35521961, old is 1.3552753276874638
-    
-    modE_xyz = np.hstack(
-        (node_to_xyz_exact, modE_array_exact.reshape(-1,1))
-    )
     
     
     # REMOVE WHEN DONE
